@@ -1,0 +1,37 @@
+// Generated using `moon info`, DON'T EDIT IT
+package "q2316367743/webdav/client"
+
+import {
+  "q2316367743/moonhttp/transport",
+  "q2316367743/webdav/types",
+}
+
+// Values
+pub const DEFAULT_PROP_NS : String = "urn:q2316367743:webdav:prop"
+
+pub fn create_webdav_client(@types.WebdavConfig) -> WebdavClient
+
+pub fn create_webdav_client_with_transport(@types.WebdavConfig, &@transport.Transport) -> WebdavClient
+
+// Errors
+
+// Types and methods
+pub struct WebdavClient {
+  // private fields
+}
+pub async fn WebdavClient::copy_path(Self, src~ : String, dst~ : String, overwrite? : Bool) -> Unit raise @types.WebdavError
+pub async fn WebdavClient::delete(Self, path~ : String) -> Unit raise @types.WebdavError
+pub async fn WebdavClient::download_file(Self, path~ : String, on_chunk~ : (Bytes) -> Unit, chunk_size? : Int, on_progress? : (@types.Progress) -> Unit) -> Unit raise @types.WebdavError
+pub async fn WebdavClient::exists(Self, path~ : String) -> Bool raise @types.WebdavError
+pub async fn WebdavClient::get_file(Self, path~ : String, on_progress? : (@types.Progress) -> Unit) -> Bytes raise @types.WebdavError
+pub async fn WebdavClient::get_properties(Self, path~ : String, names~ : Array[String], ns_uri? : String) -> Map[String, String] raise @types.WebdavError
+pub async fn WebdavClient::list(Self, path~ : String) -> Array[@types.FileInfo] raise @types.WebdavError
+pub async fn WebdavClient::mkdir(Self, path~ : String) -> Unit raise @types.WebdavError
+pub async fn WebdavClient::move_path(Self, src~ : String, dst~ : String, overwrite? : Bool) -> Unit raise @types.WebdavError
+pub async fn WebdavClient::put_file(Self, path~ : String, data~ : Bytes, content_type? : String, on_progress? : (@types.Progress) -> Unit) -> Unit raise @types.WebdavError
+pub async fn WebdavClient::set_properties(Self, path~ : String, props~ : Array[(String, String)], ns_uri? : String) -> Unit raise @types.WebdavError
+pub async fn WebdavClient::stat(Self, path~ : String) -> @types.FileInfo raise @types.WebdavError
+
+// Type aliases
+
+// Traits

@@ -1,0 +1,38 @@
+// Generated using `moon info`, DON'T EDIT IT
+package "q2316367743/webdav/xmlutil"
+
+import {
+  "Milky2018/xml",
+  "q2316367743/webdav/types",
+}
+
+// Values
+pub fn parse_multistatus(String) -> Array[ParsedResource] raise @xml.XmlError
+
+pub fn propfind_allprop_body() -> String
+
+pub fn propfind_named_body(Array[String], ns_uri~ : String) -> String raise @xml.WriterError
+
+pub fn proppatch_set_body(Array[(String, String)], ns_uri~ : String) -> String raise @xml.WriterError
+
+// Errors
+
+// Types and methods
+pub(all) struct ParsedProp {
+  name : String
+  ns_uri : String?
+  value : String
+}
+
+pub(all) struct ParsedResource {
+  href : String
+  is_dir : Bool
+  props : Array[ParsedProp]
+}
+pub fn ParsedResource::display_name(Self) -> String
+pub fn ParsedResource::find_prop(Self, local_name~ : String, ns_uri~ : String) -> String?
+pub fn ParsedResource::to_file_info(Self) -> @types.FileInfo
+
+// Type aliases
+
+// Traits

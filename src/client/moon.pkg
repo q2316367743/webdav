@@ -1,0 +1,20 @@
+// WebDAV 客户端实现包：实例构造、请求管线（URL 拼接 / 统一状态检查）、
+// 全部 WebDAV 操作（按文件分组：文件 / 目录 / 移动复制）。
+// 网络交互全部经由 moonhttp；状态码由本层统一判定，
+// 因此 moonhttp 配置里 validate_status 恒为放行。
+import {
+  "Milky2018/xml",
+  "q2316367743/moonhttp",
+  "q2316367743/moonhttp/config",
+  "q2316367743/moonhttp/httpconn",
+  "q2316367743/moonhttp/transport",
+  "q2316367743/webdav/types",
+  "q2316367743/webdav/xmlutil",
+}
+
+// 黑盒测试注入 MockTransport 需要 transport 与 async 运行时。
+import {
+  "moonbitlang/async",
+  "moonbitlang/core/encoding/utf8",
+  "q2316367743/moonhttp/transport",
+} for "test"

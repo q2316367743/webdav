@@ -1,0 +1,9 @@
+// 公共类型包：配置、资源信息、进度与统一错误，以及路径的 percent 编解码。
+// 被所有实现包依赖，自身只依赖 moonhttp（错误包装）与 xml（错误包装），
+// 不含任何业务逻辑。
+import {
+  "moonbitlang/core/buffer",
+  "moonbitlang/core/encoding/utf8",
+  "q2316367743/moonhttp",
+  "Milky2018/xml",
+}

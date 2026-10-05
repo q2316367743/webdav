@@ -1,0 +1,36 @@
+// Generated using `moon info`, DON'T EDIT IT
+package "q2316367743/webdav"
+
+import {
+  "q2316367743/moonhttp/transport",
+  "q2316367743/webdav/client",
+  "q2316367743/webdav/types",
+}
+
+// Values
+pub const DEFAULT_PROP_NS : String = "urn:q2316367743:webdav:prop"
+
+pub const DEFAULT_TIMEOUT_MS : Int = 30_000
+
+pub fn create_webdav_client(@types.WebdavConfig) -> @client.WebdavClient
+
+pub fn create_webdav_client_with_transport(@types.WebdavConfig, &@transport.Transport) -> @client.WebdavClient
+
+// Errors
+
+// Types and methods
+
+// Type aliases
+pub using @types {type FileInfo}
+
+pub using @types {type Progress}
+
+pub using @client {type WebdavClient}
+
+pub using @types {type WebdavConfig}
+
+pub using @types {type WebdavError}
+
+pub using @types {type WebdavErrorDetail}
+
+// Traits

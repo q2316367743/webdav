@@ -1,0 +1,15 @@
+// 根包是门面：只做类型与入口的重导出，用户侧统一以 `@webdav.xxx` 访问。
+// 业务实现全部在子包：src/types（公共类型）、src/client（操作）、
+// src/xmlutil（XML 构建与解析）。
+import {
+  "q2316367743/moonhttp/transport",
+  "q2316367743/webdav/client",
+  "q2316367743/webdav/types",
+}
+
+// 黑盒测试经 MockTransport 注入，不触网。
+import {
+  "moonbitlang/async",
+  "moonbitlang/core/encoding/utf8",
+  "q2316367743/moonhttp/transport",
+} for "test"

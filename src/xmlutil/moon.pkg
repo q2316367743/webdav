@@ -1,0 +1,7 @@
+// WebDAV XML 构建与解析：PROPFIND / PROPPATCH 请求体生成，
+// 207 Multi-Status 响应解析。所有匹配按 local_name + namespace（DAV:），
+// 不依赖服务端使用的前缀写法。
+import {
+  "Milky2018/xml",
+  "q2316367743/webdav/types",
+}

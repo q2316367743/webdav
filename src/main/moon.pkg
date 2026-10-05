@@ -1,0 +1,16 @@
+// WebDAV 客户端演示与真实验证程序（testdata/ 是真实测试文件，
+// verify_server.py 是无 brew webdav 时的兜底服务端）。
+// 一键测试：bash src/main/run_tests.sh（起 WebDAV 服务端 → moon test
+// 全套测试 → 真实全流程 → 关闭服务端并汇总结果）。
+// 单独运行：moon run src/main，服务器地址 / 凭据 / 测试数据可用环境变量覆盖：
+// WEBDAV_URL / WEBDAV_USER / WEBDAV_PASS / WEBDAV_TESTDATA。
+import {
+  "moonbitlang/async",
+  "moonbitlang/async/fs",
+  "moonbitlang/core/buffer",
+  "moonbitlang/core/encoding/utf8",
+  "moonbitlang/core/env",
+  "q2316367743/webdav",
+}
+
+pkgtype(kind: "executable")

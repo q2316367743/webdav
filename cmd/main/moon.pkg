@@ -1,5 +1,0 @@
-// import {
-//   "q2316367743/webdav" @lib,
-// }
-
-pkgtype(kind: "executable")

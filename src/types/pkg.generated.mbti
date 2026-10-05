@@ -1,0 +1,64 @@
+// Generated using `moon info`, DON'T EDIT IT
+package "q2316367743/webdav/types"
+
+import {
+  "Milky2018/xml",
+  "q2316367743/moonhttp",
+}
+
+// Values
+pub const DEFAULT_TIMEOUT_MS : Int = 30_000
+
+pub fn parse_ascii_int(String) -> Int?
+
+pub fn percent_decode(String) -> String
+
+pub fn percent_encode_path(String) -> String
+
+// Errors
+pub(all) suberror WebdavError {
+  WebdavError(WebdavErrorDetail)
+}
+pub fn WebdavError::api(status~ : Int, operation~ : String, message~ : String) -> Self
+pub fn WebdavError::detail(Self) -> WebdavErrorDetail
+pub fn WebdavError::http(@moonhttp.HttpError) -> Self
+pub fn WebdavError::output(Self, &Logger) -> Unit
+pub fn WebdavError::to_string(Self) -> String
+pub fn WebdavError::xml(@xml.XmlError) -> Self
+pub impl Show for WebdavError
+
+// Types and methods
+pub(all) struct FileInfo {
+  href : String
+  name : String
+  is_dir : Bool
+  content_length : Int?
+  content_type : String?
+  last_modified : String?
+  created : String?
+  etag : String?
+}
+
+pub(all) struct Progress {
+  loaded : Int
+  total : Int?
+}
+pub fn Progress::percent(Self) -> Double?
+
+pub(all) struct WebdavConfig {
+  base_url : String
+  username : String?
+  password : String?
+  timeout_ms : Int?
+} derive(Default)
+pub fn WebdavConfig::default() -> Self
+
+pub(all) enum WebdavErrorDetail {
+  Http(@moonhttp.HttpError)
+  Xml(@xml.XmlError)
+  Api(status~ : Int, operation~ : String, message~ : String)
+}
+
+// Type aliases
+
+// Traits
