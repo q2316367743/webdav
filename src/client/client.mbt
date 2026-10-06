@@ -1,14 +1,10 @@
-// 客户端核心：实例构造、URL 拼接、请求发送与状态检查，
-// 以及二进制上传所需的传输层装饰器。
+// 客户端核心：实例构造、URL 拼接、请求发送与状态检查。
 
 ///|
 /// WebDAV 客户端：全部操作以方法形式挂在本类型上。
 /// 通过 `create_webdav_client` 构造（根包重导出）。
 pub struct WebdavClient {
   priv http : @moonhttp.Client
-  priv defaults : @config.Config
-  // 保留底层传输引用：PUT 二进制上传需要以其为内层包装装饰器
-  priv transport : &@transport.Transport
   priv base_url : String
 }
 
@@ -70,8 +66,6 @@ pub fn create_webdav_client_with_transport(
   let defaults = build_defaults(config)
   {
     http: @moonhttp.Client::new(config=defaults, transport~),
-    defaults,
-    transport,
     base_url: normalize_base(config.base_url),
   }
 }

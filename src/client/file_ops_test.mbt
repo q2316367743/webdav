@@ -15,7 +15,10 @@ async test "put_file 原样发送二进制请求体与 Content-Type" {
     request.url,
     "http://127.0.0.1:8080/dav/%E4%B8%AD%E6%96%87%20file.bin",
   )
-  assert_eq(request.body, Some(payload))
+  // Mock 记录流式请求体的引用而不消费：读回验证声明长度与内容
+  guard! request.body is Some(@transport.RequestBody::Stream(body))
+  assert_eq(body.content_length, Some(payload.length()))
+  assert_eq(body.reader.read_all().binary(), payload)
   assert_eq(
     request.headers.get("Content-Type"),
     Some("application/octet-stream"),

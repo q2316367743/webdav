@@ -86,7 +86,10 @@ async test "set_properties 发出 PROPPATCH 与属性请求体" {
   )
   let expected = "<D:propertyupdate xmlns:D=\"DAV:\" xmlns:X=\"urn:q2316367743:webdav:prop\">" +
     "<D:set><D:prop><X:color>red</X:color></D:prop></D:set></D:propertyupdate>"
-  assert_eq(request.body, Some(@utf8.encode(expected)))
+  assert_true(
+    request.body is Some(@transport.RequestBody::Buffered(bytes)) &&
+    bytes == @utf8.encode(expected),
+  )
 }
 
 ///|

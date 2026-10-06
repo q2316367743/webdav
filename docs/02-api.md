@@ -60,7 +60,7 @@ match error.detail() {
 
 | 方法 | 签名要点 | 说明 |
 |------|---------|------|
-| `put_file` | `path~ : String, data~ : Bytes, content_type? : String, on_progress? : (Progress) -> Unit` | PUT 整体上传 |
+| `put_file` | `path~ : String, data~ : Bytes, content_type? : String, on_progress? : (Progress) -> Unit` | PUT 整体上传（流式请求体，定长分帧） |
 | `get_file` | `path~ : String, on_progress?` | GET 全量下载到内存 |
 | `download_file` | `path~ : String, on_chunk~ : (Bytes) -> Unit, chunk_size? : Int, on_progress?` | 流式分块下载 |
 | `mkdir` | `path~ : String` | MKCOL 单级建目录 |
@@ -88,15 +88,18 @@ match error.detail() {
 - `download_file`：每收到一个 chunk 回调一次（`total` 来自 Content-Length，无长度时 `None`）；
 - Mock 传输层不写连接，上传进度不触发（黑盒测试断言了这一点）。
 
-### 流式上传限制与升级预留
+### 流式上传实现（moonhttp 0.5）
 
-moonhttp 0.4 的请求体是一次性字节，`put_file` 因此接受完整 `Bytes`（全量传输，
-内存占用 = 文件大小）。实现上通过 `BinaryBodyTransport` 装饰器在传输层注入
-Bytes。moonhttp 支持流式请求体后：
+`put_file` 走 moonhttp 0.5 的流式请求体：入参 `Bytes` 由 `BytesReader`
+（`src/client/file_ops.mbt`，实现 `@io.Reader` 的拉取式适配器）按块供给传输层，
+`content_length=data.length()` 声明定长分帧。签名与进度语义不变：
 
-1. 删除 `src/client/file_ops.mbt` 中的 `BinaryBodyTransport`；
-2. `put_file` 改为 moonhttp 的流式 body 配置（或追加 `put_file_stream` 方法），
-   签名与进度语义保持不变。
+- 每写完一个 64 KiB 分块回调一次 `on_progress`，`total = Some(data.length())`；
+- `Content-Length` 由 moonhttp 分帧层管理，调用方无需（也不应）自行设置；
+- Mock 传输层记录流引用而不消费，上传进度不触发（黑盒测试断言了这一点）。
+
+`data` 契约仍是「完整内容已在内存」。真正的「从磁盘边读边发」
+（`put_file_stream`）留待后续按需追加。
 
 ### 属性（死属性）命名空间
 

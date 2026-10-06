@@ -1,33 +1,48 @@
-// 文件上传与下载。上传是整体 PUT（moonhttp 0.4 请求体为一次性字节，
-// 其分块写出的节奏即为上传进度）；下载提供全量（get_file）与
-// 流式分块消费（download_file）两种形态。
+// 文件上传与下载。上传走 moonhttp 0.5 的流式请求体：内存 Bytes 由
+// BytesReader 以拉取方式按块供给，定长 Content-Length 分帧，传输层边读
+// 边写、每 64 KiB 分块触发上传进度；下载提供全量（get_file）与流式分块
+// 消费（download_file）两种形态。
 
 ///|
-/// 二进制请求体装饰器：moonhttp 0.4 的 Config 只能从 String 构造请求体，
-/// 这里在传输层入口把请求的 body 替换为真实 Bytes。
-/// Content-Length 与上传进度都由传输层按替换后的 body 计算，天然一致；
-/// moonhttp 支持流式请求体后本类型可整体移除。
-priv struct BinaryBodyTransport {
-  inner : &@transport.Transport
+/// Bytes 的拉取式读取流：把已在内存的文件内容按块交给传输层，
+/// 不引入协程与管道、也不拷贝整份数据（视图切片直接供给泵循环）。
+/// 单次上传独占一个实例，光标走到尾部即 EOF。
+priv struct BytesReader {
   data : Bytes
-  on_progress : ((@config.ProgressEvent) -> Unit)?
+  mut pos : Int
+  // read_some 复用这块内部缓冲做中转，须与实例同生命周期
+  buf : @io.ReaderBuffer
 }
 
 ///|
-impl @transport.Transport for BinaryBodyTransport with fn send(self, request) {
-  self.inner.send({
-    ..request,
-    body: Some(self.data),
-    on_upload_progress: self.on_progress,
-  })
+impl @io.Reader for BytesReader with fn _get_internal_buffer(self) {
+  self.buf
+}
+
+///|
+impl @io.Reader for BytesReader with fn _direct_read(
+  self,
+  dst,
+  offset~,
+  max_len~,
+) -> Int {
+  let remaining = self.data.length() - self.pos
+  if remaining <= 0 {
+    return 0
+  }
+  let n = if max_len < remaining { max_len } else { remaining }
+  dst.blit_from_bytesview(offset, self.data[self.pos:self.pos + n])
+  self.pos = self.pos + n
+  n
 }
 
 ///|
 /// 上传文件（PUT 整体写入）。
 ///
-/// - `data`：完整文件内容（moonhttp 支持流式请求体之前，上传是全量传输）；
+/// - `data`：完整文件内容，包装成流式请求体发送；
 /// - `content_type`：可选 MIME 类型；
-/// - `on_progress`：上传进度，按传输层 64 KiB 分块节奏触发。
+/// - `on_progress`：上传进度，按传输层 64 KiB 分块节奏触发，
+///   `total` 为声明的请求体长度。
 pub async fn WebdavClient::put_file(
   self : WebdavClient,
   path~ : String,
@@ -35,20 +50,19 @@ pub async fn WebdavClient::put_file(
   content_type? : String,
   on_progress? : (@types.Progress) -> Unit,
 ) -> Unit raise @types.WebdavError {
-  let transport = BinaryBodyTransport::{
-    inner: self.transport,
-    data,
-    on_progress: adapt_progress(on_progress),
-  }
-  let client = @moonhttp.Client::new(config=self.defaults, transport~)
-  let mut cfg = @config.Config::new(self.url_for(path)).with_method(
-    @config.Method::Put,
-  )
+  let reader = BytesReader::{ data, pos: 0, buf: @io.ReaderBuffer::new(), }
+  let mut cfg = @config.Config::new(self.url_for(path))
+    .with_method(@config.Method::Put)
+    .with_data_from_stream(reader, content_length=data.length())
   match content_type {
     Some(mime) => cfg = cfg.with_header("Content-Type", mime)
     None => ()
   }
-  let response = client.request(cfg) catch {
+  match adapt_progress(on_progress) {
+    Some(report) => cfg = cfg.with_on_upload_progress(report)
+    None => ()
+  }
+  let response = self.http.request(cfg) catch {
     error => raise @types.WebdavError::http(error)
   }
   ignore(check_status(response, operation="PUT", ok=[200, 201, 204]))

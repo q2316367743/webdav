@@ -3,7 +3,7 @@
 ## 模块概览
 
 - 模块：`q2316367743/webdav`（moon.mod，`source = "src"`，`preferred_target = "native"`——moonhttp 基于 moonbitlang/async，仅 native 可用）
-- 依赖：`q2316367743/moonhttp@0.4.0`（HTTP 客户端）、`Milky2018/xml@0.5.0`（XML 解析）、`moonbitlang/async@0.22.2`（测试与演示程序）
+- 依赖：`q2316367743/moonhttp@0.5.0`（HTTP 客户端，流式请求体）、`Milky2018/xml@0.5.0`（XML 解析）、`moonbitlang/async@0.22.2`（测试与演示程序；`src/client` 另引其 `io` 子包）
 
 ## 包结构与依赖方向
 
@@ -23,13 +23,13 @@ src/main/   演示程序（executable，.moonignore 已排除，不随包发布�
 
 ## 操作 ↔ HTTP 协议映射
 
-所有请求经 moonhttp `Client::request`（XML / 无 body 操作）或 `Client::stream`（流式下载）；
+所有请求经 moonhttp `Client::request`（XML / 流式 PUT / 无 body 操作）或 `Client::stream`（流式下载）；
 实例默认配置带 `with_validate_status(fn(_) { true })`——**状态码一律由本层判定**，
 `WebdavError::Api` 携带中文人读消息（见 `status_message`）。
 
 | 操作 | 方法 | 关键头 | 请求体 | 期望状态码 |
 |------|------|--------|--------|-----------|
-| `put_file` | PUT | Content-Type（可选） | 完整 Bytes（装饰器注入） | 200/201/204 |
+| `put_file` | PUT | Content-Type（可选） | 流式请求体（BytesReader 拉取，定长 Content-Length） | 200/201/204 |
 | `get_file` | GET | - | - | 200 |
 | `download_file` | GET | - | - | 200（流式） |
 | `mkdir` | MKCOL | - | - | 201 |
@@ -58,13 +58,20 @@ Basic Auth 由 moonhttp `with_auth` 自动携带（`Authorization: Basic ...`）
 moonhttp 默认非 2xx 抛 `HttpError`，但 WebDAV 中 404（exists）/ 207（PROPFIND）等需要
 本层分支处理，故统一放行后由 `check_status` 按 ok 集合转 `WebdavError::Api(status~, operation~, message~)`。
 
-### 3. 二进制上传（BinaryBodyTransport 装饰器）
+### 3. 流式上传（moonhttp 0.5 流式请求体 + BytesReader）
 
-moonhttp 0.4 的 `Config` 只能从 `String` 构造请求体，二进制 PUT 走
-`priv struct BinaryBodyTransport`（`impl @transport.Transport`）：在传输层入口把
-`PreparedRequest.body` 替换为真实 `Bytes`。`Content-Length` 与上传进度
-（64 KiB 分块）都由 moonhttp 传输层按替换后的 body 计算，天然一致。
-**moonhttp 支持流式请求体后此类型可整体移除**（见 docs/02 的升级预留）。
+moonhttp 0.5 支持流式请求体（`Config::with_data_from_stream(reader, content_length?)`，
+见 moonhttp docs/20），`put_file` 把入参 `Bytes` 包成 `priv struct BytesReader`
+（实现 `@io.Reader` 的拉取式适配器：`_direct_read` 按块把视图切片搬给泵循环，
+不引入协程与管道、不拷贝整份数据）后走 `with_data_from_stream`，并声明
+`content_length=data.length()`——定长 `Content-Length` 分帧，上传进度每
+64 KiB 分块回调、`total` 已知，经 `Config::with_on_upload_progress` 接线
+（`adapt_progress` 适配，与下载侧同一套 `Progress`）。
+
+包外实现 `@io.Reader` 依赖 async 的 `ReaderBuffer` 公开构造与 trait 的两个
+必需方法——moonhttp 的 stream_wire_test 已把这一前提钉死；`src/client/moon.pkg`
+因此按包抑制 `alert_internal`。曾用的 `BinaryBodyTransport` 传输层装饰器
+（moonhttp 0.4 时代的全量注入方案）已随本次升级整体移除。
 
 ### 4. 流式下载
 
@@ -124,7 +131,8 @@ moonhttp 0.4 的 `Config` 只能从 `String` 构造请求体，二进制 PUT 走
 
 ## 注意事项
 
-- 上传是全量传输（moonhttp 0.4 限制），大文件内存占用 = 文件大小；
+- `put_file` 的 `data` 契约仍是「完整内容已在内存」（签名 `data~ : Bytes`），
+  上传过程不再额外整份拷贝；真正的「从磁盘边读边发」留待后续 `put_file_stream`（如需要）；
 - `mkdir` 是单级（409 = 父不存在），递归创建留待后续；
 - moonhttp 的进度回调里做 HTTPS 取消有已知崩溃问题（moonhttp docs/13），
   本客户端未暴露取消能力，不受影响；

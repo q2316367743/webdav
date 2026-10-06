@@ -36,7 +36,7 @@ description = "MoonBit WebDAV 客户端：文件上传/下载（流式+进度）
 // async 测试（async test）与演示程序（async fn main）需要显式引入，
 // 版本与 moonhttp 的传递依赖保持一致。
 import {
-  "q2316367743/moonhttp@0.4.0",
+  "q2316367743/moonhttp@0.5.0",
   "Milky2018/xml@0.5.0",
   "moonbitlang/async@0.22.2",
 }
