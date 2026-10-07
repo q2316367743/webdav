@@ -1,5 +1,7 @@
 # q2316367743/webdav
 
+[![CI](https://github.com/q2316367743/webdav/actions/workflows/ci.yml/badge.svg)](https://github.com/q2316367743/webdav/actions/workflows/ci.yml)
+
 MoonBit WebDAV 客户端：文件上传 / 下载（全量字节、读取流、本地文件路径，流式 + 进度）、
 目录、移动 / 复制、PROPFIND / PROPPATCH。基于
 [moonhttp](https://mooncakes.io/docs/#/q2316367743/moonhttp/)
@@ -87,6 +89,7 @@ async fn main {
 - [docs/01-architecture.md](docs/01-architecture.md) —— 架构与协议映射
 - [docs/02-api.md](docs/02-api.md) —— API 参考
 - [docs/03-gap-analysis.md](docs/03-gap-analysis.md) —— 缺口分析与路线图
+- [docs/04-ci-cd.md](docs/04-ci-cd.md) —— CI / CD：测试与发布工作流
 
 ## 开发
 
@@ -96,3 +99,9 @@ moon test                   # 仅单元 / 黑盒测试（Mock 传输层，不触
 moon run src/main           # 单独跑真实全流程演示（环境变量见 src/main/moon.pkg 头注释）
 moon info && moon fmt
 ```
+
+CI（`.github/workflows/ci.yml`）在 push / PR 时跑检查 → 构建 → 单元测试 → 门禁，
+并另起 job 用 `run_tests.sh` 跑真实服务端全流程；发布走
+`.github/workflows/publish.yml`：改 `moon.mod` 的 `version` → 等 CI 绿 →
+建 `vX.Y.Z` 的 Release → 自动发布到 mooncakes.io。
+配置与注意事项见 [docs/04-ci-cd.md](docs/04-ci-cd.md)。

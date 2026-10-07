@@ -1,0 +1,94 @@
+# 持续集成：检查 → 构建 → 单元与黑盒测试 → 门禁；
+# 另起一个 job 跑真实 WebDAV 服务端全流程（端到端）。
+#
+# 目标为模块默认的 native（见 moon.mod 的 preferred_target）：moonhttp 依赖
+# moonbitlang/async，仅 native 后端可用，因此不做 wasm / js 矩阵。
+#
+# 两个「门禁」步骤借用了 moonbitlang 官方仓库的做法：跑 moon info 后检查工作区
+# 是否产生 diff，产生即失败。它能抓出两类容易漏掉的收尾问题——新增了公开 API
+# 却忘记重新生成 .mbti、以及代码没跑 moon fmt。
+#
+# e2e job 复用仓库里唯一的一键测试脚本 src/main/run_tests.sh：脚本自己起 WebDAV
+# 服务端（CI 上没有 brew 的 webdav，自动回退 src/main/testdata/verify_server.py，
+# 顺带覆盖客户端「HEAD 不支持 → PROPFIND Depth:0 回落」分支），跑 moon test 与
+# moon run src/main 的真实全流程，脚本退出码即本 job 的结果。
+
+name: CI
+
+on:
+  push:
+    branches: [master]
+  pull_request:
+  workflow_dispatch:
+
+# 同一分支上连续推送时，取消尚未跑完的旧任务
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+
+jobs:
+  check-build-test:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v5
+
+      - name: Install MoonBit
+        run: |
+          curl -fsSL https://cli.moonbitlang.com/install/unix.sh | bash
+          echo "$HOME/.moon/bin" >> "$GITHUB_PATH"
+
+      - name: moon version
+        run: moon version --all
+
+      - name: moon update
+        run: moon update
+
+      # 检查：--deny-warn 让告警也导致失败，避免告警堆积
+      - name: moon check
+        run: moon check --deny-warn
+
+      # 构建
+      - name: moon build
+        run: moon build
+
+      # 测试：单元与黑盒（Mock 传输层，不触网）
+      - name: moon test
+        run: moon test
+
+      # 门禁：.mbti 必须是最新的（改了公开 API 就要提交 moon info 的结果）
+      - name: moon info 门禁（.mbti 是否为最新）
+        run: |
+          moon info
+          git diff --exit-code
+
+      # 门禁：代码必须已格式化（--check 只检查、不改文件）
+      - name: moon fmt 门禁（格式是否已对齐）
+        run: moon fmt --check
+
+  e2e:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v5
+
+      - name: Install MoonBit
+        run: |
+          curl -fsSL https://cli.moonbitlang.com/install/unix.sh | bash
+          echo "$HOME/.moon/bin" >> "$GITHUB_PATH"
+
+      - name: moon version
+        run: moon version --all
+
+      - name: moon update
+        run: moon update
+
+      # 一键测试：起服务端（python 兜底）→ moon test → 真实全流程 → 关闭并汇总
+      # 阶段 1 与阶段 2 都会校验子进程退出码，编译失败不会被误判为通过
+      - name: WebDAV 真实服务器全流程（bash src/main/run_tests.sh）
+        run: bash src/main/run_tests.sh

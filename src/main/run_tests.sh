@@ -74,12 +74,16 @@ fail_count=0
 
 # ---------- 2. 全套测试（Mock 传输层，不触网）----------
 echo "──────── 阶段 1／2：全套单元与黑盒测试（moon test）────────"
-MOON_TEST_OUT="$(moon test 2>&1 | grep -v 'libtool:')"
+MOON_TEST_LOG="$WORK/moon-test.log"
+moon test > "$MOON_TEST_LOG" 2>&1
+MOON_TEST_STATUS=$?
+MOON_TEST_OUT="$(grep -v 'libtool:' "$MOON_TEST_LOG")"
 echo "$MOON_TEST_OUT" | tail -n 3
-if echo "$MOON_TEST_OUT" | grep -q "failed: 0"; then
+# 双条件：退出码为 0，且输出确实报告 failed: 0（编译失败时不会有这一行）
+if [ "$MOON_TEST_STATUS" -eq 0 ] && echo "$MOON_TEST_OUT" | grep -q "failed: 0"; then
   echo "▸ 阶段 1 结果：PASS"
 else
-  echo "▸ 阶段 1 结果：FAIL"
+  echo "▸ 阶段 1 结果：FAIL（moon test 退出码 ${MOON_TEST_STATUS}）"
   echo "$MOON_TEST_OUT" | tail -n 30
   fail_count=$((fail_count + 1))
 fi
@@ -87,13 +91,18 @@ echo
 
 # ---------- 3. 真实测试（连服务端跑全流程 + 真实文件往返）----------
 echo "──────── 阶段 2／2：真实服务器全流程（moon run src/main）────────"
-DEMO_OUT="$(WEBDAV_URL="$URL" WEBDAV_USER=demo WEBDAV_PASS=demo \
+DEMO_LOG="$WORK/demo.log"
+WEBDAV_URL="$URL" WEBDAV_USER=demo WEBDAV_PASS=demo \
   WEBDAV_TESTDATA="$SCRIPT_DIR/testdata" \
-  moon run src/main 2>&1 | grep -v 'libtool:')"
+  moon run src/main > "$DEMO_LOG" 2>&1
+DEMO_STATUS=$?
+DEMO_OUT="$(grep -v 'libtool:' "$DEMO_LOG")"
 echo "$DEMO_OUT"
 echo
-if echo "$DEMO_OUT" | grep -q "✗"; then
-  echo "▸ 阶段 2 结果：FAIL"
+# 双条件：退出码为 0，且输出里没有失败标记。
+# 只看 ✗ 会把「moon run 中途失败但没印 ✗」（例如运行时中断）误判成 PASS。
+if [ "$DEMO_STATUS" -ne 0 ] || echo "$DEMO_OUT" | grep -q "✗"; then
+  echo "▸ 阶段 2 结果：FAIL（moon run 退出码 ${DEMO_STATUS}）"
   fail_count=$((fail_count + 1))
 else
   echo "▸ 阶段 2 结果：PASS"

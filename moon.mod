@@ -20,7 +20,7 @@ readme = "README.mbt.md"
 
 source = "src"
 
-repository = ""
+repository = "https://github.com/q2316367743/webdav"
 
 license = "Apache-2.0"
 
