@@ -9,6 +9,14 @@ pub fn propfind_allprop_body() -> String {
 }
 
 ///|
+/// 只要属性名的 PROPFIND 请求体（RFC 4918 §9.1 的 propname）：
+/// 服务端只回属性名、不回值，用于先探查资源上有哪些属性。
+pub fn propfind_propname_body() -> String {
+  "<?xml version=\"1.0\" encoding=\"utf-8\"?>" +
+  "<D:propfind xmlns:D=\"DAV:\"><D:propname/></D:propfind>"
+}
+
+///|
 /// 按名请求属性的 PROPFIND 请求体：`names` 为属性局部名列表，
 /// `ns_uri` 为属性所属命名空间 URI。
 /// 名字或 URI 非法（不构成合法 XML 名 / 属性）时 raise `WriterError`。

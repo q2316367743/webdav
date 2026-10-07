@@ -49,13 +49,17 @@ async fn main {
     let payload = @utf8.encode(
       "你好，WebDAV！这是 MoonBit 客户端上传的内容。\n",
     )
-    client.put_file(
+    let put = client.put_file(
       path="/demo/hello.txt",
       data=payload,
       content_type="text/plain; charset=utf-8",
       on_progress=progress_printer("上传"),
     )
-    println("✓ PUT /demo/hello.txt")
+    let etag_text = match put.etag {
+      Some(tag) => "，ETag \{tag}"
+      None => ""
+    }
+    println("✓ PUT /demo/hello.txt（HTTP \{put.status}\{etag_text}）")
     // 3. 属性：stat 与自定义属性（部分服务端不持久化死属性，读回为空不算失败）
     let info = client.stat(path="/demo/hello.txt")
     let size = info.content_length.unwrap_or(-1)
@@ -90,7 +94,7 @@ async fn main {
     match @env.get_env_var("WEBDAV_TESTDATA") {
       Some(dir) => {
         let big : Bytes = @fs.read_file("\{dir}/binary.bin").binary()
-        client.put_file(
+        let _ = client.put_file(
           path="/demo/binary.bin",
           data=big,
           content_type="application/octet-stream",
@@ -107,20 +111,36 @@ async fn main {
           "真实文件 binary.bin（\{big.length()} 字节）往返一致",
         )
         let text : Bytes = @fs.read_file("\{dir}/hello.txt").binary()
-        client.put_file(
+        let _ = client.put_file(
           path="/demo/中文 sample (v1).txt",
           data=text,
           content_type="text/plain; charset=utf-8",
         )
         let roundtrip = client.get_file(path="/demo/中文 sample (v1).txt")
-        check(roundtrip == text, "特殊文件名上传下载往返一致")
+        check(
+          roundtrip.content == text,
+          "特殊文件名上传下载往返一致",
+        )
         client.delete(path="/demo/中文 sample (v1).txt")
         client.delete(path="/demo/binary.bin")
       }
       None =>
         println("（未设置 WEBDAV_TESTDATA，跳过真实文件校验）")
     }
-    // 8. 清理
+    // 8. 能力探测与存在性判断
+    // OPTIONS 拿服务端能力面，避免靠失败状态码猜支持面。
+    let caps = client.options()
+    println(
+      "✓ OPTIONS：DAV 等级 \{caps.dav_class.length()} 个，允许方法 \{caps.allow.length()} 个，LOCK=\{caps.has_lock()}",
+    )
+    // exists 优先 HEAD；服务端不支持 HEAD（如 run_tests.sh 里 VERIFY_NO_HEAD_PREFIX
+    // 命中的前缀）时回落到 PROPFIND Depth:0，结果不变。
+    check(client.exists(path="/demo/renamed.txt"), "EXISTS /demo/renamed.txt")
+    check(
+      !client.exists(path="/demo/not-here.txt"),
+      "EXISTS /demo/not-here.txt 为假",
+    )
+    // 9. 清理
     client.delete(path="/demo/copy.txt")
     client.delete(path="/demo/renamed.txt")
     client.delete(path="/demo")

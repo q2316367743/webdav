@@ -71,6 +71,10 @@ pub(all) enum WebdavErrorDetail {
   Xml(@xml.XmlError)
   /// 服务端返回了该操作不期望的状态码，`message` 为中文人读描述
   Api(status~ : Int, operation~ : String, message~ : String)
+  /// 207 Multi-Status 中有资源失败（COPY / MOVE / DELETE 的批量语义）
+  Partial(operation~ : String, failures~ : Array[ResourceFailure])
+  /// 请求被 `AbortSignal` 取消；`reason` 为调用方给出的取消原因
+  Cancelled(String?)
 }
 
 ///|
@@ -111,6 +115,22 @@ pub fn WebdavError::api(
 }
 
 ///|
+/// 构造「部分失败」错误：批量操作（COPY / MOVE / DELETE）的 207 响应里
+/// 有资源没成功，`failures` 至少含一条。
+pub fn WebdavError::partial(
+  operation~ : String,
+  failures~ : Array[ResourceFailure],
+) -> WebdavError {
+  WebdavError(Partial(operation~, failures~))
+}
+
+///|
+/// 构造「请求已取消」错误。
+pub fn WebdavError::cancelled(reason? : String) -> WebdavError {
+  WebdavError(Cancelled(reason))
+}
+
+///|
 /// 人读的中文错误描述，便于日志与字符串插值。
 pub fn WebdavError::to_string(self : WebdavError) -> String {
   match self.detail() {
@@ -118,6 +138,20 @@ pub fn WebdavError::to_string(self : WebdavError) -> String {
     Xml(error) => "XML 解析错误: " + error.to_string()
     Api(status~, operation~, message~) =>
       "\{operation} 失败: HTTP \{status} \{message}"
+    Partial(operation~, failures~) => {
+      let first = if failures.length() > 0 {
+        let head = failures[0]
+        "（首个 \{head.href}：HTTP \{head.status} \{head.message}）"
+      } else {
+        ""
+      }
+      "\{operation} 部分失败: \{failures.length()} 个条目失败" + first
+    }
+    Cancelled(reason) =>
+      match reason {
+        Some(text) => "请求已取消（\{text}）"
+        None => "请求已取消"
+      }
   }
 }
 

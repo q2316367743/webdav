@@ -2,6 +2,7 @@
 package "q2316367743/webdav"
 
 import {
+  "q2316367743/moonhttp/abort",
   "q2316367743/moonhttp/transport",
   "q2316367743/webdav/client",
   "q2316367743/webdav/types",
@@ -21,9 +22,27 @@ pub fn create_webdav_client_with_transport(@types.WebdavConfig, &@transport.Tran
 // Types and methods
 
 // Type aliases
+pub using @abort {type AbortController}
+
+pub using @abort {type AbortSignal}
+
+pub using @types {type Conditions}
+
+pub using @types {type Depth}
+
 pub using @types {type FileInfo}
 
+pub using @types {type GetResult}
+
 pub using @types {type Progress}
+
+pub using @types {type PropResult}
+
+pub using @types {type PutResult}
+
+pub using @types {type ResourceFailure}
+
+pub using @types {type ServerCapabilities}
 
 pub using @client {type WebdavClient}
 

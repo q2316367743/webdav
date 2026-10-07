@@ -124,3 +124,48 @@ pub fn percent_decode(text : String) -> String {
     text
   }
 }
+
+///|
+/// 把 207 响应里的 href 归一化成服务器上的绝对路径，供「与服务端路径比对」
+/// 与「用作本地路径」两种用途：
+///
+/// - 剥离 `scheme://authority`（部分服务端与反向代理会回绝对 URL）；
+/// - 丢弃 `?query` 与 `#fragment`；
+/// - percent 解码；
+/// - 去掉末尾斜杠（根路径 `/` 保留）。
+pub fn href_to_path(href : String) -> String {
+  let path = match href.find("://") {
+    Some(scheme_end) => {
+      let rest = href[scheme_end + 3:].to_owned()
+      match rest.find("/") {
+        Some(slash) => rest[slash:].to_owned()
+        None => "/"
+      }
+    }
+    None => href
+  }
+  trim_trailing_slash(percent_decode(strip_query_fragment(path)))
+}
+
+///|
+/// 砍掉 `?query` 与 `#fragment`：两者之后的内容不属于路径。
+fn strip_query_fragment(text : String) -> String {
+  let buf = StringBuilder()
+  for ch in text {
+    if ch == '?' || ch == '#' {
+      break
+    }
+    buf.write_char(ch)
+  }
+  buf.to_string()
+}
+
+///|
+/// 去掉末尾斜杠；根路径 `/` 与空串保持不变。
+fn trim_trailing_slash(text : String) -> String {
+  if text.has_suffix("/") && text.length() > 1 {
+    text[:text.length() - 1].to_owned()
+  } else {
+    text
+  }
+}

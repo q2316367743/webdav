@@ -13,6 +13,8 @@ pub fn propfind_allprop_body() -> String
 
 pub fn propfind_named_body(Array[String], ns_uri~ : String) -> String raise @xml.WriterError
 
+pub fn propfind_propname_body() -> String
+
 pub fn proppatch_set_body(Array[(String, String)], ns_uri~ : String) -> String raise @xml.WriterError
 
 // Errors
@@ -22,12 +24,15 @@ pub(all) struct ParsedProp {
   name : String
   ns_uri : String?
   value : String
+  status : Int
 }
 
 pub(all) struct ParsedResource {
   href : String
   is_dir : Bool
   props : Array[ParsedProp]
+  status : Int?
+  responsedescription : String?
 }
 pub fn ParsedResource::display_name(Self) -> String
 pub fn ParsedResource::find_prop(Self, local_name~ : String, ns_uri~ : String) -> String?

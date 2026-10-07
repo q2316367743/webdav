@@ -9,10 +9,22 @@ pub using @types {
   type Progress,
   type WebdavError,
   type WebdavErrorDetail,
+  type Depth,
+  type Conditions,
+  type ServerCapabilities,
+  type PropResult,
+  type ResourceFailure,
+  type PutResult,
+  type GetResult,
 }
 
 ///|
 pub using @client {type WebdavClient}
+
+///|
+/// 取消信号：`AbortController::new()` 取 `signal()` 传给任意操作的
+/// `signal?` 参数，被取消的请求抛 `WebdavError` 的 `Cancelled`。
+pub using @moonhttp {type AbortController, type AbortSignal}
 
 ///|
 /// 默认单请求超时（毫秒），与 `@types.DEFAULT_TIMEOUT_MS` 同值。

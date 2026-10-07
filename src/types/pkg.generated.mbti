@@ -9,6 +9,10 @@ import {
 // Values
 pub const DEFAULT_TIMEOUT_MS : Int = 30_000
 
+pub fn ascii_upper(String) -> String
+
+pub fn href_to_path(String) -> String
+
 pub fn parse_ascii_int(String) -> Int?
 
 pub fn percent_decode(String) -> String
@@ -20,14 +24,29 @@ pub(all) suberror WebdavError {
   WebdavError(WebdavErrorDetail)
 }
 pub fn WebdavError::api(status~ : Int, operation~ : String, message~ : String) -> Self
+pub fn WebdavError::cancelled(reason? : String) -> Self
 pub fn WebdavError::detail(Self) -> WebdavErrorDetail
 pub fn WebdavError::http(@moonhttp.HttpError) -> Self
 pub fn WebdavError::output(Self, &Logger) -> Unit
+pub fn WebdavError::partial(operation~ : String, failures~ : Array[ResourceFailure]) -> Self
 pub fn WebdavError::to_string(Self) -> String
 pub fn WebdavError::xml(@xml.XmlError) -> Self
 pub impl Show for WebdavError
 
 // Types and methods
+pub(all) struct Conditions {
+  if_match : String?
+  if_none_match : String?
+}
+pub fn Conditions::new(if_match? : String, if_none_match? : String) -> Self
+
+pub(all) enum Depth {
+  Zero
+  One
+  Infinity
+}
+pub fn Depth::to_header(Self) -> String
+
 pub(all) struct FileInfo {
   href : String
   name : String
@@ -39,11 +58,48 @@ pub(all) struct FileInfo {
   etag : String?
 }
 
+pub(all) struct GetResult {
+  content : Bytes
+  status : Int
+  content_type : String?
+  content_length : Int?
+  etag : String?
+  last_modified : String?
+}
+
 pub(all) struct Progress {
   loaded : Int
   total : Int?
 }
 pub fn Progress::percent(Self) -> Double?
+
+pub(all) struct PropResult {
+  name : String
+  value : String
+  status : Int
+}
+
+pub(all) struct PutResult {
+  status : Int
+  created : Bool
+  etag : String?
+  last_modified : String?
+  location : String?
+}
+
+pub(all) struct ResourceFailure {
+  href : String
+  status : Int
+  message : String
+}
+
+pub(all) struct ServerCapabilities {
+  dav_class : Array[Int]
+  allow : Array[String]
+  server : String?
+}
+pub fn ServerCapabilities::has_lock(Self) -> Bool
+pub fn ServerCapabilities::supports(Self, String) -> Bool
 
 pub(all) struct WebdavConfig {
   base_url : String
@@ -57,6 +113,8 @@ pub(all) enum WebdavErrorDetail {
   Http(@moonhttp.HttpError)
   Xml(@xml.XmlError)
   Api(status~ : Int, operation~ : String, message~ : String)
+  Partial(operation~ : String, failures~ : Array[ResourceFailure])
+  Cancelled(String?)
 }
 
 // Type aliases

@@ -123,3 +123,85 @@ async test "get_properties 返回命名空间内的属性映射" {
   assert_eq(props.get("note"), Some("备注"))
   assert_true(props.get("absent") is None)
 }
+
+///|
+async test "list 归一化绝对 href 并排除自身" {
+  let xml =
+    #|<?xml version="1.0" encoding="utf-8"?>
+    #|<D:multistatus xmlns:D="DAV:">
+    #| <D:response>
+    #|  <D:href>http://127.0.0.1:8080/dav/</D:href>
+    #|  <D:propstat><D:prop><D:resourcetype><D:collection/></D:resourcetype></D:prop></D:propstat>
+    #| </D:response>
+    #| <D:response>
+    #|  <D:href>http://127.0.0.1:8080/dav/%E4%B8%AD%E6%96%87.txt</D:href>
+    #|  <D:propstat><D:prop><D:resourcetype/><D:getcontentlength>3</D:getcontentlength></D:prop></D:propstat>
+    #| </D:response>
+    #|</D:multistatus>
+  let (client, _) = dav_client(multistatus_response(xml))
+  let items = client.list(path="/")
+  assert_eq(items.length(), 1)
+  assert_eq(items[0].name, "中文.txt")
+  assert_eq(items[0].content_length, Some(3))
+}
+
+///|
+async test "list_recursive 发 Depth: infinity" {
+  let xml =
+    #|<?xml version="1.0" encoding="utf-8"?>
+    #|<D:multistatus xmlns:D="DAV:">
+    #| <D:response>
+    #|  <D:href>/dav/dir</D:href>
+    #|  <D:propstat><D:prop><D:resourcetype><D:collection/></D:resourcetype></D:prop></D:propstat>
+    #| </D:response>
+    #|</D:multistatus>
+  let (client, mock) = dav_client(multistatus_response(xml))
+  let items = client.list_recursive(path="/dir")
+  // 只有自身条目，被排除
+  assert_eq(items.length(), 0)
+  assert_eq(mock.last_request().unwrap().headers.get("Depth"), Some("infinity"))
+}
+
+///|
+async test "get_properties_with_status 保留 404 propstat" {
+  let xml =
+    #|<?xml version="1.0" encoding="utf-8"?>
+    #|<D:multistatus xmlns:D="DAV:" xmlns:X="urn:q2316367743:webdav:prop">
+    #| <D:response>
+    #|  <D:href>/dav/a.txt</D:href>
+    #|  <D:propstat>
+    #|   <D:prop><X:color>red</X:color></D:prop>
+    #|   <D:status>HTTP/1.1 200 OK</D:status>
+    #|  </D:propstat>
+    #|  <D:propstat>
+    #|   <D:prop><X:absent>gone</X:absent></D:prop>
+    #|   <D:status>HTTP/1.1 404 Not Found</D:status>
+    #|  </D:propstat>
+    #| </D:response>
+    #|</D:multistatus>
+  let (client, _) = dav_client(multistatus_response(xml))
+  // 404 propstat 的属性不进映射表
+  let props = client.get_properties(path="/a.txt", names=["color", "absent"])
+  assert_eq(props.get("color"), Some("red"))
+  assert_true(props.get("absent") is None)
+  // 带状态版本能看到「没有这个属性」与「值为空」的区别
+  let detailed = client.get_properties_with_status(path="/a.txt", names=[
+    "color", "absent",
+  ])
+  assert_eq(detailed.length(), 2)
+  assert_eq(detailed[0].name, "color")
+  assert_eq(detailed[0].status, 200)
+  assert_eq(detailed[1].name, "absent")
+  assert_eq(detailed[1].status, 404)
+}
+
+///|
+async test "delete 207 有失败条目时抛 Partial" {
+  let (client, _) = dav_client(
+    multistatus_response(
+      status_only_multistatus("/dav/locked.txt", "HTTP/1.1 423 Locked"),
+    ),
+  )
+  let error = capture_error(() => client.delete(path="/locked.txt")).unwrap()
+  assert_true(error.detail() is Partial(operation="DELETE", failures=_))
+}

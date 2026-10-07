@@ -17,7 +17,7 @@ fn mock_response(
 }
 
 ///|
-async test "门面完整操作流：建目录 → 上传 → 列目录 → 下载 → 属性 → 移动 → 复制 → 删除" {
+async test "门面完整操作流：建目录 → 上传 → 列目录 → 下载 → 属性 → 移动 → 复制 → 删除 → 探测" {
   let list_xml =
     #|<?xml version="1.0" encoding="utf-8"?>
     #|<D:multistatus xmlns:D="DAV:">
@@ -37,6 +37,16 @@ async test "门面完整操作流：建目录 → 上传 → 列目录 → 下�
     "<D:propstat><D:prop><X:color>red</X:color></D:prop></D:propstat></D:response></D:multistatus>"
   let propupdate_result = "<?xml version=\"1.0\"?><D:multistatus xmlns:D=\"DAV:\"><D:response><D:href>/dav/demo/hello.txt</D:href>" +
     "<D:propstat><D:prop/><D:status>HTTP/1.1 200 OK</D:status></D:propstat></D:response></D:multistatus>"
+  let options_response : @transport.RawResponse = {
+    status: 204,
+    status_text: "",
+    headers: @transport.Headers::new()
+    .set("Content-Type", "text/plain")
+    .set("DAV", "1, 2")
+    .set("Allow", "OPTIONS, GET, HEAD, PUT, PROPFIND"),
+    set_cookies: [],
+    body: @transport.ResponseBody::from_bytes(Bytes::new(0)),
+  }
   let mock = @transport.MockTransport::from_responses([
     mock_response(201, "text/plain", ""), // MKCOL /demo
     mock_response(201, "text/plain", ""), // PUT /demo/hello.txt
@@ -47,6 +57,7 @@ async test "门面完整操作流：建目录 → 上传 → 列目录 → 下�
     mock_response(201, "text/plain", ""), // MOVE
     mock_response(201, "text/plain", ""), // COPY
     mock_response(204, "text/plain", ""), // DELETE
+    options_response, // OPTIONS
   ])
   let transport : &@transport.Transport = mock
   let client = @webdav.create_webdav_client_with_transport(
@@ -61,20 +72,24 @@ async test "门面完整操作流：建目录 → 上传 → 列目录 → 下�
   // 建目录 → 上传（带进度）
   client.mkdir(path="/demo")
   let mut uploaded = 0
-  client.put_file(
+  let put = client.put_file(
     path="/demo/hello.txt",
     data=@utf8.encode("hello webdav"),
     content_type="text/plain",
     on_progress=fn(progress : @webdav.Progress) { uploaded = progress.loaded },
   )
+  assert_eq(put.status, 201)
+  assert_true(put.created)
   // 列目录：自身（/demo/）被排除
   let items = client.list(path="/demo")
   assert_eq(items.length(), 1)
   assert_eq(items[0].name, "hello.txt")
   assert_eq(items[0].content_length, Some(12))
-  // 下载（全量）
-  let bytes = client.get_file(path="/demo/hello.txt")
-  assert_eq(bytes, @utf8.encode("hello webdav"))
+  // 下载（全量）：新接口把内容与响应元数据一起回传
+  let got = client.get_file(path="/demo/hello.txt")
+  assert_eq(got.content, @utf8.encode("hello webdav"))
+  assert_eq(got.status, 200)
+  assert_eq(got.content_type, Some("text/plain"))
   // 属性读写
   let props = client.get_properties(path="/demo/hello.txt", names=["color"])
   assert_eq(props.get("color"), Some("red"))
@@ -85,8 +100,36 @@ async test "门面完整操作流：建目录 → 上传 → 列目录 → 下�
   client.move_path(src="/demo/hello.txt", dst="/demo/renamed.txt")
   client.copy_path(src="/demo/renamed.txt", dst="/demo/copy.txt")
   client.delete(path="/demo/copy.txt")
-  // 全部 9 个请求按序发出（Basic Auth 头也在）
-  assert_eq(mock.request_count(), 9)
-  let put = mock.received()[1]
-  assert_eq(put.headers.get("Authorization") is Some(_), true)
+  // 能力探测：DAV 等级与 Allow 方法表
+  let caps = client.options()
+  assert_eq(caps.dav_class, [1, 2])
+  assert_true(caps.supports("put"))
+  assert_true(caps.has_lock())
+  // 全部 10 个请求按序发出（Basic Auth 头也在）
+  assert_eq(mock.request_count(), 10)
+  assert_eq(mock.received()[1].headers.get("Authorization") is Some(_), true)
+}
+
+///|
+test "门面重导出协议类型与取消信号" {
+  assert_eq(@webdav.Depth::Infinity.to_header(), "infinity")
+  assert_eq(@webdav.Depth::Zero.to_header(), "0")
+  let conditions = @webdav.Conditions::new(if_none_match="*")
+  assert_eq(conditions.if_none_match, Some("*"))
+  assert_true(conditions.if_match is None)
+  let controller = @webdav.AbortController::new()
+  assert_false(controller.signal().aborted())
+  let caps : @webdav.ServerCapabilities = {
+    dav_class: [1, 2],
+    allow: ["PROPFIND", "LOCK"],
+    server: None,
+  }
+  assert_true(caps.has_lock())
+  let failure : @webdav.ResourceFailure = {
+    href: "/dav/a.txt",
+    status: 403,
+    message: "无权限",
+  }
+  let error = @webdav.WebdavError::partial(operation="MOVE", failures=[failure])
+  assert_true(error.to_string().contains("部分失败"))
 }

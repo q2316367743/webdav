@@ -78,49 +78,8 @@ fn WebdavClient::url_for(self : WebdavClient, path : String) -> String {
 }
 
 ///|
-/// 常见 WebDAV 状态码的中文注解（用于 Api 错误消息）。
-fn status_message(status : Int) -> String {
-  match status {
-    200 => "成功"
-    201 => "已创建"
-    204 => "成功（无响应体）"
-    207 => "Multi-Status"
-    301 | 302 | 307 | 308 => "重定向"
-    400 => "请求不合法"
-    401 => "未认证（检查用户名 / 密码）"
-    403 => "无权限"
-    404 => "资源不存在"
-    405 => "方法不允许（目标已存在或服务器不支持该操作）"
-    409 => "冲突（父目录不存在？）"
-    412 => "前置条件失败（目标已存在且不允许覆盖？）"
-    423 => "资源被锁定"
-    502 | 504 => "网关错误"
-    507 => "存储空间不足"
-    _ => "服务端返回异常状态"
-  }
-}
-
-///|
-/// 校验响应状态码：不在 ok 集合内则抛 `Api` 错误。
-fn check_status(
-  response : @moonhttp.Response,
-  operation~ : String,
-  ok~ : Array[Int],
-) -> @moonhttp.Response raise @types.WebdavError {
-  if ok.contains(response.status) {
-    response
-  } else {
-    raise @types.WebdavError::api(
-      status=response.status,
-      operation~,
-      message=status_message(response.status),
-    )
-  }
-}
-
-///|
 /// 发送文本请求体（或无请求体）的请求并校验状态码。
-/// XML 类操作（PROPFIND / PROPPATCH）走这里。
+/// XML 类操作（PROPFIND / PROPPATCH）与轻量探测（OPTIONS / HEAD）走这里。
 async fn WebdavClient::send(
   self : WebdavClient,
   operation~ : String,
@@ -128,6 +87,8 @@ async fn WebdavClient::send(
   path~ : String,
   headers? : Array[(String, String)],
   body? : String,
+  conditions? : @types.Conditions,
+  signal? : @moonhttp.AbortSignal,
   ok~ : Array[Int],
 ) -> @moonhttp.Response raise @types.WebdavError {
   let mut cfg = @config.Config::new(self.url_for(path)).with_method(http_method)
@@ -143,10 +104,60 @@ async fn WebdavClient::send(
     Some(xml) => cfg = cfg.with_data_from_str(xml)
     None => ()
   }
-  let response = self.http.request(cfg) catch {
-    error => raise @types.WebdavError::http(error)
+  cfg = apply_conditions(cfg, conditions)
+  let response = self.http.request(cfg, signal?) catch {
+    error => raise map_http_error(error, signal_reason(signal))
   }
   check_status(response, operation~, ok~)
+}
+
+///|
+/// 把条件请求对象落到请求头上：`If-Match` / `If-None-Match`。
+fn apply_conditions(
+  cfg : @config.Config,
+  conditions : @types.Conditions?,
+) -> @config.Config {
+  match conditions {
+    Some(cond) => {
+      let mut out = cfg
+      match cond.if_match {
+        Some(etag) => out = out.with_header("If-Match", etag)
+        None => ()
+      }
+      match cond.if_none_match {
+        Some(etag) => out = out.with_header("If-None-Match", etag)
+        None => ()
+      }
+      out
+    }
+    None => cfg
+  }
+}
+
+///|
+/// 取消信号给出的原因（未提供原因时为 `None`）。
+fn signal_reason(signal : @moonhttp.AbortSignal?) -> String? {
+  match signal {
+    Some(sig) => sig.reason()
+    None => None
+  }
+}
+
+///|
+/// 把 moonhttp 的错误映射成本模块的统一错误：取消单独成一类，
+/// 其余归入网络 / HTTP 层。
+fn map_http_error(
+  error : @moonhttp.HttpError,
+  reason : String?,
+) -> @types.WebdavError {
+  if error.is_cancelled() {
+    match reason {
+      Some(text) => @types.WebdavError::cancelled(reason=text)
+      None => @types.WebdavError::cancelled()
+    }
+  } else {
+    @types.WebdavError::http(error)
+  }
 }
 
 ///|

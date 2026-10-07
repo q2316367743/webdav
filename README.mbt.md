@@ -20,13 +20,15 @@ async fn main {
     password: Some("pass"),
     timeout_ms: None,
   })
-  // 上传（进度按 64 KiB 分块节奏回调）
-  client.put_file(
+  // 上传（进度按 64 KiB 分块节奏回调；返回值带 ETag 等元数据）
+  let put = client.put_file(
     path="/demo/hello.txt",
     data=@utf8.encode("你好，WebDAV！"),
     content_type="text/plain; charset=utf-8",
+    conditions=@webdav.Conditions::new(if_none_match="*"), // 仅当不存在时创建
     on_progress=fn(p) { println("上传 (\{p.loaded}/\{p.total})") },
   )
+  println("已创建：\{put.created}，ETag：\{put.etag}")
   // 列目录
   let items = client.list(path="/demo")
   for item in items {
@@ -45,24 +47,30 @@ async fn main {
 
 | 类别 | 方法 |
 |------|------|
-| 上传 / 下载 | `put_file`（全量 + 进度）、`get_file`（全量）、`download_file`（流式 + 进度） |
-| 目录 | `mkdir`、`list`（列目录）、`stat`（属性）、`exists` |
-| 移动 / 复制 | `move_path`、`copy_path`（可控制覆盖语义） |
-| 自定义属性 | `set_properties` / `get_properties`（PROPPATCH / 按名 PROPFIND） |
+| 上传 / 下载 | `put_file`（流式 + 进度，返回 `PutResult`）、`get_file`（全量，返回 `GetResult`）、`download_file`（流式 + 进度） |
+| 目录 | `mkdir`、`list`（可指定 `Depth`）、`list_recursive`（整树）、`stat`（属性）、`exists`（HEAD，不支持时自动回退 PROPFIND） |
+| 移动 / 复制 | `move_path`、`copy_path`（覆盖语义 + `Depth`） |
+| 自定义属性 | `set_properties` / `get_properties` / `get_properties_with_status`（PROPPATCH / 按名 PROPFIND，保留 404 状态） |
+| 能力探测 | `options`（`DAV` / `Allow` / `Server` → `ServerCapabilities`） |
+| 协议控制 | 所有方法的 `conditions?`（`If-Match` / `If-None-Match`）与 `signal?`（`AbortController` 取消） |
 
-统一错误为 `WebdavError`（`detail()` 区分网络 / XML 解析 / 非期望状态码三类，
-`to_string()` 为中文人读描述）；所有方法为 `async ... raise WebdavError`。
+统一错误为 `WebdavError`（`detail()` 区分网络 / XML 解析 / 非期望状态码 /
+207 部分失败 / 已取消五类，`to_string()` 为中文人读描述）；
+所有方法为 `async ... raise WebdavError`。
 
 ## 已知限制
 
-- 上传是全量传输：moonhttp 0.4 请求体为一次性字节，`put_file` 接受完整 `Bytes`；
-  moonhttp 支持流式请求体后将同步升级（接口形态已预留）。
-- `mkdir` 单级创建（父目录不存在得 409）；递归创建与 LOCK/UNLOCK 留待后续。
+- 上传是全量传输：`put_file` 接受完整 `Bytes`（内部已是流式请求体，但内容要先在内存）；
+  从磁盘边读边发的 `put_file_stream` 见路线图。
+- `mkdir` 单级创建（父目录不存在得 409）。
+- 尚无 LOCK/UNLOCK 与 `If:` 锁令牌；`options().has_lock()` 只能探测服务端是否支持。
+- 更多缺口与 P1 / P2 路线图见 [docs/03-gap-analysis.md](docs/03-gap-analysis.md)。
 
 ## 文档
 
 - [docs/01-architecture.md](docs/01-architecture.md) —— 架构与协议映射
 - [docs/02-api.md](docs/02-api.md) —— API 参考
+- [docs/03-gap-analysis.md](docs/03-gap-analysis.md) —— 缺口分析与路线图
 
 ## 开发
 

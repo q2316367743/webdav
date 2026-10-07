@@ -46,7 +46,10 @@ EOF
   webdav -c "$WORK/server.yml" > "$WORK/server.log" 2>&1 &
 else
   SERVER_KIND="python3 verify_server"
-  python3 "$SCRIPT_DIR/testdata/verify_server.py" "$PORT" "$WORK/data" \
+  # VERIFY_NO_HEAD_PREFIX：让 /demo 下的 HEAD 返回 405，
+  # 从而覆盖客户端 exists 的「HEAD 不支持 → PROPFIND Depth:0 回落」分支
+  VERIFY_NO_HEAD_PREFIX=/demo \
+    python3 "$SCRIPT_DIR/testdata/verify_server.py" "$PORT" "$WORK/data" \
     > "$WORK/server.log" 2>&1 &
 fi
 SERVER_PID=$!

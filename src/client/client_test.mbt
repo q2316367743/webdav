@@ -19,6 +19,50 @@ fn dav_response(
 }
 
 ///|
+/// 在 `dav_response` 基础上追加响应头（DAV / Allow / Server / ETag 等）。
+fn dav_response_with(
+  status : Int,
+  content_type : String,
+  body : String,
+  extra : Array[(String, String)],
+) -> @transport.RawResponse {
+  let mut headers = @transport.Headers::new().set("Content-Type", content_type)
+  for entry in extra {
+    // Headers::set 是不可变更新（返回新集合），必须接住返回值
+    headers = headers.set(entry.0, entry.1)
+  }
+  {
+    status,
+    status_text: "",
+    headers,
+    set_cookies: [],
+    body: @transport.ResponseBody::from_bytes(@utf8.encode(body)),
+  }
+}
+
+///|
+/// 按队列造响应的客户端：一次操作可能连发多个请求时使用
+/// （如 HEAD 405 后回落到 PROPFIND 的 `exists`）。
+fn dav_client_queue(
+  responses : Array[@transport.RawResponse],
+) -> (@client.WebdavClient, @transport.MockTransport) {
+  let mock = @transport.MockTransport::from_responses(responses)
+  let transport : &@transport.Transport = mock
+  (
+    @client.create_webdav_client_with_transport(
+      {
+        base_url: "http://127.0.0.1:8080/dav/",
+        username: None,
+        password: None,
+        timeout_ms: None,
+      },
+      transport,
+    ),
+    mock,
+  )
+}
+
+///|
 /// 造一个打到 Mock 传输层的客户端，返回 (客户端, mock) 便于断言请求。
 fn dav_client(
   response : @transport.RawResponse,

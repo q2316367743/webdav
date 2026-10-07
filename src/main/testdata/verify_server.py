@@ -6,6 +6,12 @@ DELETE/MOVE/COPY/PROPFIND/PROPPATCH，死属性存内存（每次启动清空）
 brew 版 `webdav`（hacdias）可用时优先用它，本脚本兜底——区别是本脚本
 的 PROPPATCH 死属性真的能读回。
 
+刻意对齐协议的几处细节（用于验证客户端的 P0 修复）：
+- Depth:1 不递归（只回直接子项），Depth:infinity 才回整棵树；
+- propname 只回属性名；按名请求时「没存过的死属性」回 404 propstat；
+- 环境变量 VERIFY_NO_HEAD_PREFIX 命中前缀的 HEAD 返回 405，
+  用来验证客户端的 HEAD → PROPFIND Depth:0 回落。
+
 用法：python3 verify_server.py [port] [root]
 默认：8083 /tmp/webdav-verify-root
 """
@@ -21,6 +27,8 @@ from xml.sax.saxutils import escape
 PORT = int(sys.argv[1]) if len(sys.argv) > 1 else 8083
 ROOT = sys.argv[2] if len(sys.argv) > 2 else "/tmp/webdav-verify-root"
 DEAD_PROPS = {}  # 服务器路径 -> {属性名: 值}
+NS_DEAD = "urn:q2316367743:webdav:prop"
+NO_HEAD_PREFIX = os.environ.get("VERIFY_NO_HEAD_PREFIX", "")
 
 
 class Handler(BaseHTTPRequestHandler):
@@ -40,7 +48,9 @@ class Handler(BaseHTTPRequestHandler):
     def send(self, status, body=b"", ctype="text/plain"):
         self.send_response(status)
         self.send_header("Content-Type", ctype)
-        self.send_header("Content-Length", str(len(body)))
+        # HEAD 不发送响应体：长度也按 0 报，避免客户端按长度等待不存在的 body
+        length = 0 if self.command == "HEAD" else len(body)
+        self.send_header("Content-Length", str(length))
         self.end_headers()
         if body and self.command != "HEAD":
             self.wfile.write(body)
@@ -79,6 +89,8 @@ class Handler(BaseHTTPRequestHandler):
             self.send(200, f.read(), "application/octet-stream")
 
     def do_HEAD(self):
+        if NO_HEAD_PREFIX and urlparse(self.path).path.startswith(NO_HEAD_PREFIX):
+            return self.send(405, b"HEAD not supported for this prefix")
         if os.path.exists(self.fs_path(self.path)):
             self.send(200, b"")
         else:
@@ -120,48 +132,79 @@ class Handler(BaseHTTPRequestHandler):
     def do_PROPFIND(self):
         path = self.fs_path(self.path)
         depth = self.headers.get("Depth", "1")
+        length = int(self.headers.get("Content-Length", 0))
+        body = self.rfile.read(length).decode("utf-8", "replace") if length else ""
         if not os.path.exists(path):
             return self.send(404, b"not found")
-        length = int(self.headers.get("Content-Length", 0))
-        if length:
-            self.rfile.read(length)
-        entries = [self.path] if depth == "0" else [self.path] + self._children(self.path, path)
-        self.send(207, self._multistatus(entries).encode(), "application/xml; charset=utf-8")
+        entries = [self.path]
+        if depth != "0":
+            entries += self._children(self.path, path)
+        self.send(207, self._multistatus(entries, body).encode(), "application/xml; charset=utf-8")
 
     def _children(self, url_base, fs_dir):
+        """Depth:1 只回直接子项；Depth:infinity 才递归整棵树。"""
         out = []
         base = urlparse(url_base).path.rstrip("/")
         for name in sorted(os.listdir(fs_dir)):
             child_fs = os.path.join(fs_dir, name)
             suffix = "/" if os.path.isdir(child_fs) else ""
             out.append(base + "/" + name + suffix)
-            if os.path.isdir(child_fs):
+            if self.headers.get("Depth") == "infinity" and os.path.isdir(child_fs):
                 out.extend(self._children(base + "/" + name, child_fs))
         return out
 
-    def _prop_xml(self, url_path):
+    def _live_props(self, url_path):
+        """活属性：[(限定名, 值的 XML 片段)]。"""
         path = self.fs_path(url_path)
         is_dir = os.path.isdir(path)
-        props = ["<D:resourcetype>%s</D:resourcetype>" % ("<D:collection/>" if is_dir else "")]
+        props = [("D:resourcetype", "<D:collection/>" if is_dir else "")]
         if not is_dir and os.path.isfile(path):
-            props.append("<D:getcontentlength>%d</D:getcontentlength>" % os.path.getsize(path))
-            props.append("<D:getcontenttype>application/octet-stream</D:getcontenttype>")
-            props.append("<D:getlastmodified>%s</D:getlastmodified>" % time.strftime(
-                "%a, %d %b %Y %H:%M:%S GMT", time.gmtime(os.path.getmtime(path))))
-        dead = DEAD_PROPS.get(urlparse(url_path).path, {})
-        for name, value in dead.items():
-            props.append('<X:%s xmlns:X="urn:q2316367743:webdav:prop">%s</X:%s>' % (name, escape(value), name))
-        return "<D:prop>%s</D:prop>" % "".join(props)
+            props.append(("D:getcontentlength", "%d" % os.path.getsize(path)))
+            props.append(("D:getcontenttype", "application/octet-stream"))
+            props.append(("D:getlastmodified", time.strftime(
+                "%a, %d %b %Y %H:%M:%S GMT", time.gmtime(os.path.getmtime(path)))))
+        return props
 
-    def _multistatus(self, url_paths):
+    def _propstats(self, url_path, mode, names):
+        """按状态码分段：命中 200，请求了但没存过的死属性 404。"""
+        dead = DEAD_PROPS.get(urlparse(url_path).path, {})
+        ok, missing = [], []
+        if mode == "named":
+            for name in names:
+                if name in dead:
+                    ok.append('<X:%s xmlns:X="%s">%s</X:%s>' % (name, NS_DEAD, escape(dead[name]), name))
+                else:
+                    missing.append('<X:%s xmlns:X="%s"/>' % (name, NS_DEAD))
+        else:
+            for tag, value in self._live_props(url_path):
+                ok.append("<%s>%s</%s>" % (tag, value, tag))
+            for name, value in dead.items():
+                # propname 只要名字（值留空）
+                body = "" if mode == "propname" else escape(value)
+                ok.append('<X:%s xmlns:X="%s">%s</X:%s>' % (name, NS_DEAD, body, name))
+        parts = []
+        if ok:
+            parts.append("<D:propstat><D:prop>%s</D:prop>"
+                         "<D:status>HTTP/1.1 200 OK</D:status></D:propstat>" % "".join(ok))
+        if missing:
+            parts.append("<D:propstat><D:prop>%s</D:prop>"
+                         "<D:status>HTTP/1.1 404 Not Found</D:status></D:propstat>" % "".join(missing))
+        return parts
+
+    def _multistatus(self, url_paths, body=""):
+        if "<D:propname" in body or "<propname" in body:
+            mode, names = "propname", []
+        elif "<D:prop>" in body or "<prop>" in body:
+            mode = "named"
+            names = re.findall(r"<[A-Za-z_][\w.-]*:([A-Za-z_][\w.-]*)\s*/>", body)
+        else:
+            mode, names = "allprop", []
         parts = ['<?xml version="1.0" encoding="utf-8"?>', '<D:multistatus xmlns:D="DAV:">']
         for url_path in url_paths:
             parts.append("<D:response>")
             parts.append("<D:href>%s</D:href>" % escape(urlparse(url_path).path))
-            parts.append("<D:propstat>")
-            parts.append(self._prop_xml(url_path))
-            parts.append("<D:status>HTTP/1.1 200 OK</D:status>")
-            parts.append("</D:propstat></D:response>")
+            parts.extend(self._propstats(url_path, mode, names))
+            parts.append("</D:response>")
         parts.append("</D:multistatus>")
         return "".join(parts)
 

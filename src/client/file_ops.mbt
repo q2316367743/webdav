@@ -37,10 +37,13 @@ impl @io.Reader for BytesReader with fn _direct_read(
 }
 
 ///|
-/// 上传文件（PUT 整体写入）。
+/// 上传文件（PUT 整体写入），返回响应元数据（ETag / Last-Modified /
+/// Location），可直接用于后续的条件请求。
 ///
 /// - `data`：完整文件内容，包装成流式请求体发送；
 /// - `content_type`：可选 MIME 类型；
+/// - `conditions`：可选 `If-Match` / `If-None-Match`（乐观并发控制，
+///   如 `If-None-Match: "*"` 表示「仅当资源不存在时才创建」）；
 /// - `on_progress`：上传进度，按传输层 64 KiB 分块节奏触发，
 ///   `total` 为声明的请求体长度。
 pub async fn WebdavClient::put_file(
@@ -48,8 +51,10 @@ pub async fn WebdavClient::put_file(
   path~ : String,
   data~ : Bytes,
   content_type? : String,
+  conditions? : @types.Conditions,
   on_progress? : (@types.Progress) -> Unit,
-) -> Unit raise @types.WebdavError {
+  signal? : @moonhttp.AbortSignal,
+) -> @types.PutResult raise @types.WebdavError {
   let reader = BytesReader::{ data, pos: 0, buf: @io.ReaderBuffer::new(), }
   let mut cfg = @config.Config::new(self.url_for(path))
     .with_method(@config.Method::Put)
@@ -58,35 +63,64 @@ pub async fn WebdavClient::put_file(
     Some(mime) => cfg = cfg.with_header("Content-Type", mime)
     None => ()
   }
+  cfg = apply_conditions(cfg, conditions)
   match adapt_progress(on_progress) {
     Some(report) => cfg = cfg.with_on_upload_progress(report)
     None => ()
   }
-  let response = self.http.request(cfg) catch {
-    error => raise @types.WebdavError::http(error)
+  let response = self.http.request(cfg, signal?) catch {
+    error => raise map_http_error(error, signal_reason(signal))
   }
-  ignore(check_status(response, operation="PUT", ok=[200, 201, 204]))
+  let checked = check_status(response, operation="PUT", ok=[200, 201, 204])
+  {
+    status: checked.status,
+    created: checked.status == 201,
+    etag: checked.headers.get("ETag"),
+    last_modified: checked.headers.get("Last-Modified"),
+    location: checked.headers.get("Location"),
+  }
 }
 
 ///|
-/// 下载文件到内存（GET 全量读取）。
+/// 下载文件到内存（GET 全量读取），返回内容与响应元数据
+/// （Content-Type / Content-Length / ETag / Last-Modified）。
 /// `on_progress` 由 moonhttp 在读响应体过程中触发。
 pub async fn WebdavClient::get_file(
   self : WebdavClient,
   path~ : String,
+  conditions? : @types.Conditions,
   on_progress? : (@types.Progress) -> Unit,
-) -> Bytes raise @types.WebdavError {
-  let mut cfg = @config.Config::new(self.url_for(path)).with_method(
-    @config.Method::Get,
+  signal? : @moonhttp.AbortSignal,
+) -> @types.GetResult raise @types.WebdavError {
+  let mut cfg = apply_conditions(
+    @config.Config::new(self.url_for(path)).with_method(@config.Method::Get),
+    conditions,
   )
   match adapt_progress(on_progress) {
     Some(report) => cfg = cfg.with_on_download_progress(report)
     None => ()
   }
-  let response = self.http.request(cfg) catch {
-    error => raise @types.WebdavError::http(error)
+  let response = self.http.request(cfg, signal?) catch {
+    error => raise map_http_error(error, signal_reason(signal))
   }
-  check_status(response, operation="GET", ok=[200]).bytes()
+  let checked = check_status(response, operation="GET", ok=[200])
+  {
+    content: checked.bytes(),
+    status: checked.status,
+    content_type: checked.headers.get("Content-Type"),
+    content_length: read_content_length(checked.headers),
+    etag: checked.headers.get("ETag"),
+    last_modified: checked.headers.get("Last-Modified"),
+  }
+}
+
+///|
+/// 从响应头取 Content-Length（缺失或非数字时为 `None`）。
+fn read_content_length(headers : @moonhttp.Headers) -> Int? {
+  match headers.get("Content-Length") {
+    Some(text) => @types.parse_ascii_int(text)
+    None => None
+  }
 }
 
 ///|
@@ -101,18 +135,21 @@ pub async fn WebdavClient::download_file(
   path~ : String,
   on_chunk~ : (Bytes) -> Unit,
   chunk_size? : Int,
+  conditions? : @types.Conditions,
   on_progress? : (@types.Progress) -> Unit,
+  signal? : @moonhttp.AbortSignal,
 ) -> Unit raise @types.WebdavError {
   let size = if chunk_size.unwrap_or(0) > 0 {
     chunk_size.unwrap()
   } else {
     64 * 1024
   }
-  let cfg = @config.Config::new(self.url_for(path)).with_method(
-    @config.Method::Get,
+  let cfg = apply_conditions(
+    @config.Config::new(self.url_for(path)).with_method(@config.Method::Get),
+    conditions,
   )
-  let stream = self.http.stream(cfg) catch {
-    error => raise @types.WebdavError::http(error)
+  let stream = self.http.stream(cfg, signal?) catch {
+    error => raise map_http_error(error, signal_reason(signal))
   }
   if stream.status != 200 {
     let status = stream.status
@@ -123,15 +160,12 @@ pub async fn WebdavClient::download_file(
       message=status_message(status),
     )
   }
-  let total = match stream.headers.get("Content-Length") {
-    Some(text) => @types.parse_ascii_int(text)
-    None => None
-  }
+  let total = read_content_length(stream.headers)
   let mut loaded = 0
   let outcome : Result[Unit, @types.WebdavError] = try {
     while true {
       let chunk = stream.read_some(max_len=size) catch {
-        error => raise @types.WebdavError::http(error)
+        error => raise map_http_error(error, signal_reason(signal))
       }
       match chunk {
         Some(bytes) => {

@@ -11,6 +11,11 @@ pub(all) struct ParsedResource {
   is_dir : Bool
   /// prop 下收集到的全部属性（DAV: 活属性与自定义死属性混排）
   props : Array[ParsedProp]
+  /// `response` 级 `<D:status>`：批量操作（COPY / MOVE / DELETE）的 207
+  /// 用它逐资源给出结果；PROPFIND 风格响应没有该元素时为 `None`
+  status : Int?
+  /// `response` 级 `<D:responsedescription>` 文本
+  responsedescription : String?
 }
 
 ///|
@@ -19,83 +24,69 @@ pub(all) struct ParsedProp {
   name : String
   ns_uri : String?
   value : String
+  /// 所在 `propstat` 的状态码：404 表示服务端没有这个属性，
+  /// 用于把「属性不存在」与「属性值为空」区分开；缺 `<D:status>` 行时按 200
+  status : Int
 }
 
 ///|
 /// 解析过程的中间累积器；`href` / `is_dir` 随事件填充。
+/// 属性先收在 `pending_props`，等所在 `propstat` 结束、状态码已知后再
+/// 逐条打上状态收进 `props`（`<D:status>` 在 `<D:prop>` 之后是常见排布）。
 priv struct ResBuilder {
   mut href : String
   mut is_dir : Bool
+  mut status : Int?
+  mut responsedescription : String?
   props : Array[ParsedProp]
+  mut pending_props : Array[ParsedProp]
+  mut propstat_status : Int
 }
 
 ///|
 fn ResBuilder::new() -> ResBuilder {
-  { href: "", is_dir: false, props: [], }
+  {
+    href: "",
+    is_dir: false,
+    status: None,
+    responsedescription: None,
+    props: [],
+    pending_props: [],
+    propstat_status: 200,
+  }
+}
+
+///|
+/// 从 `<D:status>` 文本（如 `HTTP/1.1 404 Not Found`）里取首个三位数字状态码。
+fn parse_http_status(text : String) -> Int? {
+  let mut run = 0
+  let mut value = 0
+  for ch in text {
+    let digit = ch.to_int() - 0x30
+    if digit >= 0 && digit <= 9 {
+      run = run + 1
+      value = value * 10 + digit
+      if run == 3 {
+        return Some(value)
+      }
+    } else {
+      run = 0
+      value = 0
+    }
+  }
+  None
+}
+
+///|
+/// 2xx 视为该属性读到了值。
+fn is_success_status(status : Int) -> Bool {
+  status >= 200 && status < 300
 }
 
 ///|
 /// 按 local_name + 命名空间匹配 DAV: 元素名。
 fn is_dav_name(name : @xml.XmlName, local_name : String) -> Bool {
   name.local_name == local_name && name.namespace_uri == Some("DAV:")
-}
-
-///|
-/// 尝试把属性文本解析为整数，失败（含空串 / 非数字）返回 `None`。
-fn parse_prop_int(value : String?) -> Int? {
-  match value {
-    Some(text) => @types.parse_ascii_int(text)
-    None => None
-  }
-}
-
-///|
-/// 取 href 最后一个非空路径段并 percent 解码，作为显示名。
-/// 目录 href 常以 `/` 结尾（末段为空），根路径本身得到空串。
-pub fn ParsedResource::display_name(self : ParsedResource) -> String {
-  let mut last = ""
-  for segment in self.href.split("/") {
-    if segment != "" {
-      let buf = StringBuilder()
-      buf.write_view(segment)
-      last = buf.to_string()
-    }
-  }
-  @types.percent_decode(last)
-}
-
-///|
-/// 在属性列表中找指定局部名 + 命名空间的值（取第一个命中）。
-pub fn ParsedResource::find_prop(
-  self : ParsedResource,
-  local_name~ : String,
-  ns_uri~ : String,
-) -> String? {
-  let mut found : String? = None
-  for prop in self.props {
-    if prop.name == local_name && prop.ns_uri == Some(ns_uri) && found is None {
-      found = Some(prop.value)
-    }
-  }
-  found
-}
-
-///|
-/// 把解析结果映射为对外的 `FileInfo`（DAV: 活属性逐项提取）。
-pub fn ParsedResource::to_file_info(self : ParsedResource) -> @types.FileInfo {
-  fn dav(local_name : String) -> String? {
-    self.find_prop(local_name~, ns_uri="DAV:")
-  }
-  {
-    href: self.href,
-    name: self.display_name(),
-    is_dir: self.is_dir,
-    content_length: parse_prop_int(dav("getcontentlength")),
-    content_type: dav("getcontenttype"),
-    last_modified: dav("getlastmodified"),
-    created: dav("creationdate"),
-    etag: dav("getetag"),
-  }
 }
 
 ///|
@@ -111,6 +102,12 @@ pub fn parse_multistatus(
   let mut href_buf : StringBuilder? = None
   // prop 下正在累积文本的叶子：(局部名, 命名空间, 文本缓冲)
   let mut pending : (String, String?, StringBuilder)? = None
+  // 正在累积的 <D:status> 文本；status_at_response 区分它是 response 级
+  // 还是 propstat 级
+  let mut status_buf : StringBuilder? = None
+  let mut status_at_response = false
+  // 正在累积的 <D:responsedescription> 文本
+  let mut desc_buf : StringBuilder? = None
   fn mark_collection() -> Unit {
     match builder {
       Some(b) => b.is_dir = true
@@ -119,8 +116,55 @@ pub fn parse_multistatus(
   }
   fn push_prop(prop : ParsedProp) -> Unit {
     match builder {
-      Some(b) => b.props.push(prop)
+      Some(b) => b.pending_props.push(prop)
       None => ()
+    }
+  }
+  // propstat 结束：这一段属性打上状态码后收进最终列表
+  fn flush_propstat() -> Unit {
+    match builder {
+      Some(b) => {
+        for prop in b.pending_props {
+          b.props.push({
+            name: prop.name,
+            ns_uri: prop.ns_uri,
+            value: prop.value,
+            status: b.propstat_status,
+          })
+        }
+        b.pending_props = []
+        b.propstat_status = 200
+      }
+      None => ()
+    }
+  }
+  // response 结束：兜底 flush 后收条
+  fn finish_response() -> Unit {
+    match builder {
+      Some(b) => {
+        flush_propstat()
+        resources.push({
+          href: b.href,
+          is_dir: b.is_dir,
+          props: b.props,
+          status: b.status,
+          responsedescription: b.responsedescription,
+        })
+        builder = None
+      }
+      None => ()
+    }
+  }
+  // 文本归属：属性值 > href > status > responsedescription
+  fn write_text(text : String) -> Unit {
+    if pending is Some((_, _, buf)) {
+      buf.write_string(text)
+    } else if href_buf is Some(buf) {
+      buf.write_string(text)
+    } else if status_buf is Some(buf) {
+      buf.write_string(text)
+    } else if desc_buf is Some(buf) {
+      buf.write_string(text)
     }
   }
   while true {
@@ -134,6 +178,21 @@ pub fn parse_multistatus(
         let parent = if depth >= 2 { Some(stack[depth - 2]) } else { None }
         if is_dav_name(name, "response") && depth == 2 {
           builder = Some(ResBuilder::new())
+        } else if is_dav_name(name, "propstat") && parent == Some("response") {
+          match builder {
+            Some(b) => {
+              b.propstat_status = 200
+              b.pending_props = []
+            }
+            None => ()
+          }
+        } else if is_dav_name(name, "status") &&
+          (parent == Some("propstat") || parent == Some("response")) {
+          status_at_response = parent == Some("response")
+          status_buf = Some(StringBuilder())
+        } else if is_dav_name(name, "responsedescription") &&
+          parent == Some("response") {
+          desc_buf = Some(StringBuilder())
         } else if is_dav_name(name, "collection") &&
           parent == Some("resourcetype") {
           mark_collection()
@@ -160,28 +219,13 @@ pub fn parse_multistatus(
             name: name.local_name,
             ns_uri: name.namespace_uri,
             value: "",
+            status: 200,
           })
         }
         ignore(stack.pop())
       }
-      Text(text) =>
-        match pending {
-          Some((_, _, buf)) => buf.write_string(text)
-          None =>
-            match href_buf {
-              Some(buf) => buf.write_string(text)
-              None => ()
-            }
-        }
-      CData(text) =>
-        match pending {
-          Some((_, _, buf)) => buf.write_string(text)
-          None =>
-            match href_buf {
-              Some(buf) => buf.write_string(text)
-              None => ()
-            }
-        }
+      Text(text) => write_text(text)
+      CData(text) => write_text(text)
       End(name) => {
         if is_dav_name(name, "href") {
           match (builder, href_buf) {
@@ -190,22 +234,44 @@ pub fn parse_multistatus(
           }
           href_buf = None
         }
+        if is_dav_name(name, "status") && status_buf is Some(buf) {
+          let parsed = parse_http_status(buf.to_string())
+          match builder {
+            Some(b) =>
+              if status_at_response {
+                b.status = parsed
+              } else {
+                b.propstat_status = parsed.unwrap_or(200)
+              }
+            None => ()
+          }
+          status_buf = None
+        }
+        if is_dav_name(name, "responsedescription") && desc_buf is Some(buf) {
+          match builder {
+            Some(b) => b.responsedescription = Some(buf.to_string())
+            None => ()
+          }
+          desc_buf = None
+        }
         match pending {
           Some((pending_name, ns_uri, buf)) =>
             if name.local_name == pending_name {
-              push_prop({ name: pending_name, ns_uri, value: buf.to_string(), })
+              push_prop({
+                name: pending_name,
+                ns_uri,
+                value: buf.to_string(),
+                status: 200,
+              })
               pending = None
             }
           None => ()
         }
+        if is_dav_name(name, "propstat") {
+          flush_propstat()
+        }
         if is_dav_name(name, "response") {
-          match builder {
-            Some(b) => {
-              resources.push({ href: b.href, is_dir: b.is_dir, props: b.props, })
-              builder = None
-            }
-            None => ()
-          }
+          finish_response()
         }
         ignore(stack.pop())
       }
