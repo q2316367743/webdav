@@ -8,9 +8,11 @@ import {
   "q2316367743/webdav/types",
 }
 
-// 黑盒测试经 MockTransport 注入，不触网。
+// 黑盒测试经 MockTransport 注入，不触网；流式 / 路径形态的用例需要
+// 造一个 pull 型读取流（临时文件 + @fs.File），故测试引 async/fs。
 import {
   "moonbitlang/async",
+  "moonbitlang/async/fs",
   "moonbitlang/core/encoding/utf8",
   "q2316367743/moonhttp/transport",
 } for "test"

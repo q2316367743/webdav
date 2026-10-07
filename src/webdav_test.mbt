@@ -111,6 +111,41 @@ async test "门面完整操作流：建目录 → 上传 → 列目录 → 下�
 }
 
 ///|
+async test "门面可直接做流式上传与下载到本地路径" {
+  let src = @fs.tmpdir(prefix="webdav-facade-") + "/src.bin"
+  let payload = @utf8.encode("门面流式往返")
+  @fs.write_file(src, payload)
+  let reader = @fs.open(src, mode=@fs.Mode::ReadOnly)
+  let mock = @transport.MockTransport::from_responses([
+    mock_response(201, "text/plain", ""), // put_file_stream
+    mock_response(200, "text/plain", "门面流式往返"), // download_to_path
+  ])
+  let transport : &@transport.Transport = mock
+  let client = @webdav.create_webdav_client_with_transport(
+    {
+      base_url: "http://127.0.0.1:8080/dav/",
+      username: None,
+      password: None,
+      timeout_ms: None,
+    },
+    transport,
+  )
+  // 流式上传：调用方给的是读取流，客户端不要求完整 Bytes
+  let put = client.put_file_stream(
+    path="/stream.bin",
+    reader~,
+    content_length=payload.length(),
+  )
+  assert_eq(put.status, 201)
+  reader.close()
+  // 流式下载到本地路径：写盘由客户端内部完成
+  let out = @fs.tmpdir(prefix="webdav-facade-") + "/out.bin"
+  client.download_to_path(path="/stream.bin", local_path=out)
+  assert_eq(@fs.read_file(out).binary(), payload)
+  assert_eq(mock.request_count(), 2)
+}
+
+///|
 test "门面重导出协议类型与取消信号" {
   assert_eq(@webdav.Depth::Infinity.to_header(), "infinity")
   assert_eq(@webdav.Depth::Zero.to_header(), "0")
@@ -132,4 +167,8 @@ test "门面重导出协议类型与取消信号" {
   }
   let error = @webdav.WebdavError::partial(operation="MOVE", failures=[failure])
   assert_true(error.to_string().contains("部分失败"))
+  // 本地文件系统错误分支也从门面可用
+  let io_error = @webdav.WebdavError::io(message="打开本地文件失败")
+  assert_true(io_error.detail() is Io(message=_))
+  assert_true(io_error.to_string().contains("本地文件错误"))
 }

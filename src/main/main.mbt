@@ -90,25 +90,30 @@ async fn main {
     println("✓ MOVE /demo/hello.txt → /demo/renamed.txt")
     client.copy_path(src="/demo/renamed.txt", dst="/demo/copy.txt")
     println("✓ COPY /demo/renamed.txt → /demo/copy.txt")
-    // 7. 真实文件往返（binary.bin 走 64 KiB 分块进度；hello.txt 走特殊文件名编码）
+    // 7. 真实文件往返
+    //    binary.bin：本地路径流式上传（put_file_from_path，内容不整份读进
+    //    内存）+ 流式下载写盘（download_to_path），逐字节比对；
+    //    hello.txt：全量 Bytes 上传 + 全量下载，并覆盖特殊文件名编码。
     match @env.get_env_var("WEBDAV_TESTDATA") {
       Some(dir) => {
-        let big : Bytes = @fs.read_file("\{dir}/binary.bin").binary()
-        let _ = client.put_file(
+        let local_source = "\{dir}/binary.bin"
+        let _ = client.put_file_from_path(
           path="/demo/binary.bin",
-          data=big,
+          local_path=local_source,
           content_type="application/octet-stream",
-          on_progress=progress_printer("上传 binary.bin"),
+          on_progress=progress_printer("上传 binary.bin（本地路径）"),
         )
-        let big_sink = @buffer.Buffer::Buffer()
-        client.download_file(
+        let local_target = @fs.tmpdir(prefix="webdav-dl-") + "/binary.bin"
+        client.download_to_path(
           path="/demo/binary.bin",
-          on_chunk=fn(chunk) { big_sink.write_bytes(chunk) },
-          on_progress=progress_printer("下载 binary.bin"),
+          local_path=local_target,
+          on_progress=progress_printer("下载 binary.bin（写盘）"),
         )
+        let expected : Bytes = @fs.read_file(local_source).binary()
+        let actual : Bytes = @fs.read_file(local_target).binary()
         check(
-          big_sink.to_bytes() == big,
-          "真实文件 binary.bin（\{big.length()} 字节）往返一致",
+          actual == expected,
+          "本地路径流式往返 binary.bin（\{expected.length()} 字节）一致",
         )
         let text : Bytes = @fs.read_file("\{dir}/hello.txt").binary()
         let _ = client.put_file(

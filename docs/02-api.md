@@ -43,7 +43,7 @@ let client = @webdav.create_webdav_client({
 | `created` | String? | RFC 3339 原样 |
 | `etag` | String? | 含引号原样 |
 
-### PutResult（`put_file` 的返回值，破坏性变更）
+### PutResult（`put_file` / `put_file_stream` / `put_file_from_path` 的返回值）
 
 | 字段 | 类型 | 说明 |
 |------|------|------|
@@ -82,12 +82,16 @@ match error.detail() {
   Api(status~, operation~, message~) => ... // 非期望状态码
   Partial(operation~, failures~)     => ... // 207 部分失败（failures : Array[ResourceFailure]）
   Cancelled(reason)                  => ... // 请求被取消（reason : String?）
+  Io(message~)                       => ... // 本地文件系统错误（路径形态的传输）
 }
 ```
 
 - `Api` 的 `message` 是中文状态码注解，并附服务端响应体前 200 字符；
+- `Io` 只由 `put_file_from_path` / `download_to_path` 产生（打开 / 读长度 /
+  创建 / 写入本地文件失败），`message` 是中文描述 + 原始系统错误——
+  本地问题不会被伪装成服务端问题；
 - `error.to_string()` 得中文人读描述；实现了 `Show`，可直接 `println("\{error}")`；
-- 便捷构造：`WebdavError::http / xml / api / partial / cancelled`（供扩展实现复用）。
+- 便捷构造：`WebdavError::http / xml / api / partial / cancelled / io`（供扩展实现复用）。
 
 ## 方法一览（全部 `async raise WebdavError`）
 
@@ -95,9 +99,12 @@ match error.detail() {
 
 | 方法 | 签名要点 | 说明 |
 |------|---------|------|
-| `put_file` | `path~, data~ : Bytes, content_type?` → `PutResult` | PUT 流式上传（定长分帧） |
+| `put_file` | `path~, data~ : Bytes, content_type?` → `PutResult` | PUT **全量字节**（内容须已在内存），流式发送 |
+| `put_file_stream` | `path~, reader~ : &@io.Reader, content_length? : Int, content_type?` → `PutResult` | PUT **读取流**（边读边发）；给长度定长，不给走 chunked |
+| `put_file_from_path` | `path~, local_path~ : String, content_type?` → `PutResult` | PUT **本地文件**（内部打开 / 取长度 / 边读边发 / 关闭，不读进内存） |
 | `get_file` | `path~` → `GetResult` | GET 全量下载到内存 |
-| `download_file` | `path~, on_chunk~ : (Bytes) -> Unit, chunk_size?` | 流式分块下载（默认 64 KiB） |
+| `download_file` | `path~, on_chunk~ : (Bytes) -> Unit, chunk_size?` | 流式分块下载（默认 64 KiB；同步回调，适合内存消费） |
+| `download_to_path` | `path~, local_path~ : String, chunk_size?` | 流式下载**写本地文件**（拿到 200 才建文件；async 写盘在内部完成） |
 | `mkdir` | `path~` | MKCOL 单级建目录 |
 | `delete` | `path~` | DELETE（207 部分失败 → `Partial`） |
 | `exists` | `path~` → Bool | HEAD；405/501 自动回退 PROPFIND `Depth:0` |
@@ -124,23 +131,61 @@ match error.detail() {
 
 ### 进度回调节奏
 
-- 上传：moonhttp 传输层按 64 KiB 分块写、逐块回调（真实网络进度）；
+- 上传（`put_file` / `put_file_stream` / `put_file_from_path`）：moonhttp 传输层按
+  64 KiB 分块写、逐块回调（真实网络进度）；声明了长度时 `total` 已知，chunked 时为 `None`；
 - `get_file`：moonhttp 读响应体时分块回调；
-- `download_file`：每收到一个 chunk 回调一次（`total` 来自 Content-Length，无长度时 `None`）；
+- `download_file` / `download_to_path`：每收到一个 chunk 回调一次
+  （`total` 来自 Content-Length，无长度时 `None`）；
 - Mock 传输层不写连接，上传进度不触发（黑盒测试断言了这一点）。
 
-### 流式上传实现（moonhttp 0.5）
+### 三种上传形态（moonhttp 0.5 流式请求体）
 
-`put_file` 走 moonhttp 0.5 的流式请求体：入参 `Bytes` 由 `BytesReader`
-（`src/client/file_ops.mbt`，实现 `@io.Reader` 的拉取式适配器）按块供给传输层，
-`content_length=data.length()` 声明定长分帧：
+三条入口只差「数据从哪来」，共用同一条 PUT 管线（`src/client/file_ops.mbt` 的私有
+`send_put`）：`Config::with_data_from_stream(reader, content_length?)` 决定分帧，
+`Content-Length` 由 moonhttp 分帧层管理，调用方无需（也不应）自行设置。
 
-- 每写完一个 64 KiB 分块回调一次 `on_progress`，`total = Some(data.length())`；
-- `Content-Length` 由 moonhttp 分帧层管理，调用方无需（也不应）自行设置；
-- Mock 传输层记录流引用而不消费，上传进度不触发。
+| 入口 | 数据源 | `content_length` | 内存行为 |
+|------|--------|------------------|----------|
+| `put_file` | 内存 `Bytes` | `data.length()` | 内容须已在内存；发送不额外整份拷贝（`BytesReader` 按块供给） |
+| `put_file_stream` | 任意 `&@io.Reader` | 调用方传 `content_length?`；不传即 chunked | 与文件 / 数据源大小无关 |
+| `put_file_from_path` | 本地文件路径 | 内部取 `File::size()` 快照 | **不读进内存**，传输层按 64 KiB 从文件拉取 |
 
-`data` 契约仍是「完整内容已在内存」。真正的「从磁盘边读边发」
-（`put_file_stream`）见 `docs/03-gap-analysis.md` 的 P1。
+`BytesReader` 是包内实现 `@io.Reader` 的拉取式适配器（`_direct_read` 把视图切片搬给
+泵循环，不引入协程与管道），只服务 `put_file`；流式与路径形态把调用方的 reader 原样
+转交传输层。
+
+`put_file_stream` 的流是**一次性资源**：不要用同一条流发两次请求；遇到 307/308 这类
+要求原样重放请求体的重定向时，moonhttp 直接报错而不是静默发空体；HTTP/1.0 目标必须
+传 `content_length`（1.0 不认 chunked 请求体）。
+
+### 本地文件形态（put_file_from_path / download_to_path）
+
+两者都用 `moonbitlang/async/fs`（native 专属，与模块 `preferred_target = "native"` 一致）：
+
+```moonbit
+// 上传：打开 → 用文件长度声明 Content-Length → 边读边发 → 关闭
+let put = client.put_file_from_path(
+  path="/demo/big.bin",
+  local_path="/Users/me/big.bin",
+  content_type="application/octet-stream",
+  on_progress=fn(p) { println("\{p.loaded}/\{p.total}") },
+)
+// 下载：先发请求拿 200，再建本地文件，边收边写
+client.download_to_path(path="/demo/big.bin", local_path="/Users/me/big.copy")
+```
+
+语义与边界：
+
+| 主题 | 口径 |
+|------|------|
+| 顺序 | `download_to_path` **先请求后建文件**：404 等失败不会清空本地已存在的同名文件 |
+| 覆盖 | 本地文件已存在则截断覆盖（`CreateOrTruncate`） |
+| 失败残留 | 取消或中途失败时本地可能留下部分内容，**不自动删除** |
+| 句柄 | 两条路径都在成功与失败时关闭文件；`put_file_from_path` 打不开文件或路径是目录时抛 `Io` 且**不发任何请求** |
+| 本地 IO 错误 | 统一为 `WebdavError::Io(message)`，不冒充 HTTP 错误 |
+| 目录 | 目标父目录不存在即失败（`Io`），不自动递归建目录 |
+| 长度快照 | 传输过程中源文件被改写会触发「写出字节数与声明不符」→ `Http` 错误 |
+| 超时 | `WebdavConfig::timeout_ms` 覆盖「建连 → 写头 → 写完整个请求体 → 响应头」；大文件需调大或设 `None` |
 
 ### 条件请求与乐观并发
 
@@ -164,6 +209,9 @@ controller.abort(reason="用户中断")
 ```
 
 取消后抛 `WebdavError::Cancelled(reason?)`；`reason` 透传 `AbortSignal::reason()`。
+路径形态（`put_file_from_path` / `download_to_path`）同样接受 `signal?`；
+取消落在流式泵的块与块之间或挂起的读写上都会立刻断开，
+`download_to_path` 被取消时本地留下部分内容（见上表）。
 
 ### 属性（死属性）命名空间
 

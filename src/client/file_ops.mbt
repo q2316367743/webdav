@@ -1,7 +1,10 @@
-// 文件上传与下载。上传走 moonhttp 0.5 的流式请求体：内存 Bytes 由
-// BytesReader 以拉取方式按块供给，定长 Content-Length 分帧，传输层边读
-// 边写、每 64 KiB 分块触发上传进度；下载提供全量（get_file）与流式分块
-// 消费（download_file）两种形态。
+// 文件上传的三种形态，共用一条 PUT 管线（`send_put`）：
+// - `put_file`：入参是已在内存的完整 Bytes（BytesReader 拉取式供给）；
+// - `put_file_stream`：入参是任意 `@io.Reader`，边读边发；
+// - `put_file_from_path`：入参是本地文件路径，内部打开 / 取长度 / 边读边发 / 关闭。
+// 三者都经 moonhttp 0.5 的流式请求体发送：声明长度走定长 Content-Length，
+// 长度未知走 chunked；传输层每 64 KiB 分块触发上传进度。
+// 下载实现按方向拆到 download_ops.mbt（RL-04）。
 
 ///|
 /// Bytes 的拉取式读取流：把已在内存的文件内容按块交给传输层，
@@ -40,6 +43,10 @@ impl @io.Reader for BytesReader with fn _direct_read(
 /// 上传文件（PUT 整体写入），返回响应元数据（ETag / Last-Modified /
 /// Location），可直接用于后续的条件请求。
 ///
+/// 这是**全量字节**形态：`data` 契约是「完整内容已在内存」。上传过程
+/// 本身是流式的（不额外整份拷贝），但内容要先在调用方内存里；内容在磁盘、
+/// 或大到不想整块驻留时，用 `put_file_from_path` / `put_file_stream`。
+///
 /// - `data`：完整文件内容，包装成流式请求体发送；
 /// - `content_type`：可选 MIME 类型；
 /// - `conditions`：可选 `If-Match` / `If-None-Match`（乐观并发控制，
@@ -56,9 +63,110 @@ pub async fn WebdavClient::put_file(
   signal? : @moonhttp.AbortSignal,
 ) -> @types.PutResult raise @types.WebdavError {
   let reader = BytesReader::{ data, pos: 0, buf: @io.ReaderBuffer::new(), }
+  self.send_put(
+    path~,
+    reader~,
+    content_length=data.length(),
+    content_type?,
+    conditions?,
+    on_progress?,
+    signal?,
+  )
+}
+
+///|
+/// 流式上传：数据源是任意读取流（`&@io.Reader`），传输层边读边写，
+/// 请求体不再需要整块驻留内存。
+///
+/// - `reader`：拉取式读取流。`read_some` 返回 `None`（EOF）即请求体收尾。
+///   `@fs.File`（本地文件）、`@io.MemoryReader`（边生成边推）、
+///   `@io.pipe()` 的读端（生产者协程）都能直接接；
+/// - `content_length`：请求体长度。给了走定长 `Content-Length`（进度
+///   `total` 已知，兼容 HTTP/1.0 目标）；不给走 `Transfer-Encoding: chunked`。
+///   写出字节数与声明不符时传输层报错（本地数据与声明对不上）；
+/// - 其余参数语义与 `put_file` 一致。
+///
+/// **流是一次性资源**：同一条流不要发两次请求；遇到 307/308 这类要求
+/// 原样重放请求体的重定向时，moonhttp 会直接报错而不是静默发空体。
+pub async fn WebdavClient::put_file_stream(
+  self : WebdavClient,
+  path~ : String,
+  reader~ : &@io.Reader,
+  content_length? : Int,
+  content_type? : String,
+  conditions? : @types.Conditions,
+  on_progress? : (@types.Progress) -> Unit,
+  signal? : @moonhttp.AbortSignal,
+) -> @types.PutResult raise @types.WebdavError {
+  self.send_put(
+    path~,
+    reader~,
+    content_length?,
+    content_type?,
+    conditions?,
+    on_progress?,
+    signal?,
+  )
+}
+
+///|
+/// 从本地文件路径流式上传：内部打开文件、用文件长度声明
+/// `Content-Length`、把文件句柄当读取流交给传输层，边读边发，
+/// 成功或失败都关闭句柄——**内容不整份读进内存**。
+///
+/// - `path`：服务端目标路径；`local_path`：本地待上传文件的绝对 / 相对路径；
+/// - 本地文件打不开、路径是目录时抛 `WebdavError::Io`，此时不会发出任何请求；
+/// - 其余参数语义与 `put_file` 一致（`on_progress` 的 `total` 为文件长度）。
+///
+/// 注意：长度在打开时取快照，传输过程中文件被改写会导致
+/// 「写出字节数与声明不符」，传输层报 `Http` 错误；大文件的整跳超时见
+/// `WebdavConfig::timeout_ms`（覆盖「建连 → 写完整个请求体 → 响应头」）。
+pub async fn WebdavClient::put_file_from_path(
+  self : WebdavClient,
+  path~ : String,
+  local_path~ : String,
+  content_type? : String,
+  conditions? : @types.Conditions,
+  on_progress? : (@types.Progress) -> Unit,
+  signal? : @moonhttp.AbortSignal,
+) -> @types.PutResult raise @types.WebdavError {
+  let (file, size) = open_local_source(local_path)
+  let outcome : Result[@types.PutResult, @types.WebdavError] = Ok(
+    self.send_put(
+      path~,
+      reader=file,
+      content_length=size,
+      content_type?,
+      conditions?,
+      on_progress?,
+      signal?,
+    ),
+  ) catch {
+    error => Err(error)
+  }
+  file.close()
+  match outcome {
+    Ok(result) => result
+    Err(error) => raise error
+  }
+}
+
+///|
+/// PUT 管线的公共实现：三种上传形态只差「数据从哪来」——请求头、
+/// 条件请求、进度接线与状态码判定完全一致，不重复三份。
+async fn WebdavClient::send_put(
+  self : WebdavClient,
+  path~ : String,
+  reader~ : &@io.Reader,
+  content_length? : Int,
+  content_type? : String,
+  conditions? : @types.Conditions,
+  on_progress? : (@types.Progress) -> Unit,
+  signal? : @moonhttp.AbortSignal,
+) -> @types.PutResult raise @types.WebdavError {
   let mut cfg = @config.Config::new(self.url_for(path))
     .with_method(@config.Method::Put)
-    .with_data_from_stream(reader, content_length=data.length())
+    .with_data_from_stream(reader, content_length?)
   match content_type {
     Some(mime) => cfg = cfg.with_header("Content-Type", mime)
     None => ()
@@ -82,110 +190,31 @@ pub async fn WebdavClient::put_file(
 }
 
 ///|
-/// 下载文件到内存（GET 全量读取），返回内容与响应元数据
-/// （Content-Type / Content-Length / ETag / Last-Modified）。
-/// `on_progress` 由 moonhttp 在读响应体过程中触发。
-pub async fn WebdavClient::get_file(
-  self : WebdavClient,
-  path~ : String,
-  conditions? : @types.Conditions,
-  on_progress? : (@types.Progress) -> Unit,
-  signal? : @moonhttp.AbortSignal,
-) -> @types.GetResult raise @types.WebdavError {
-  let mut cfg = apply_conditions(
-    @config.Config::new(self.url_for(path)).with_method(@config.Method::Get),
-    conditions,
-  )
-  match adapt_progress(on_progress) {
-    Some(report) => cfg = cfg.with_on_download_progress(report)
-    None => ()
+/// 打开本地文件作为上传数据源：返回（文件句柄，字节长度）。
+/// 打不开、或路径是目录，都抛 `Io`（调用方据此定位本地问题，
+/// 而不是把它当成服务端返回的错误）。
+async fn open_local_source(
+  local_path : String,
+) -> (@fs.File, Int) raise @types.WebdavError {
+  let file = @fs.open(local_path, mode=@fs.Mode::ReadOnly) catch {
+    error =>
+      raise @types.WebdavError::io(
+        message="打开本地文件失败（\{local_path}）：\{error}",
+      )
   }
-  let response = self.http.request(cfg, signal?) catch {
-    error => raise map_http_error(error, signal_reason(signal))
-  }
-  let checked = check_status(response, operation="GET", ok=[200])
-  {
-    content: checked.bytes(),
-    status: checked.status,
-    content_type: checked.headers.get("Content-Type"),
-    content_length: read_content_length(checked.headers),
-    etag: checked.headers.get("ETag"),
-    last_modified: checked.headers.get("Last-Modified"),
-  }
-}
-
-///|
-/// 从响应头取 Content-Length（缺失或非数字时为 `None`）。
-fn read_content_length(headers : @moonhttp.Headers) -> Int? {
-  match headers.get("Content-Length") {
-    Some(text) => @types.parse_ascii_int(text)
-    None => None
-  }
-}
-
-///|
-/// 流式下载（GET 分块消费）：每个分块交给 `on_chunk`（如逐块写文件），
-/// 读完即止，内存占用与文件大小无关。
-///
-/// - `chunk_size`：单次读取上限，默认 64 KiB；
-/// - `on_progress`：按已接收字节累计触发，`total` 来自 Content-Length
-///   （服务端未返回长度时为 `None`）。
-pub async fn WebdavClient::download_file(
-  self : WebdavClient,
-  path~ : String,
-  on_chunk~ : (Bytes) -> Unit,
-  chunk_size? : Int,
-  conditions? : @types.Conditions,
-  on_progress? : (@types.Progress) -> Unit,
-  signal? : @moonhttp.AbortSignal,
-) -> Unit raise @types.WebdavError {
-  let size = if chunk_size.unwrap_or(0) > 0 {
-    chunk_size.unwrap()
-  } else {
-    64 * 1024
-  }
-  let cfg = apply_conditions(
-    @config.Config::new(self.url_for(path)).with_method(@config.Method::Get),
-    conditions,
-  )
-  let stream = self.http.stream(cfg, signal?) catch {
-    error => raise map_http_error(error, signal_reason(signal))
-  }
-  if stream.status != 200 {
-    let status = stream.status
-    stream.close()
-    raise @types.WebdavError::api(
-      status~,
-      operation="GET",
-      message=status_message(status),
+  if file.kind() == @fs.FileKind::Directory {
+    file.close()
+    raise @types.WebdavError::io(
+      message="本地路径是目录，不能作为上传数据源：\{local_path}",
     )
   }
-  let total = read_content_length(stream.headers)
-  let mut loaded = 0
-  let outcome : Result[Unit, @types.WebdavError] = try {
-    while true {
-      let chunk = stream.read_some(max_len=size) catch {
-        error => raise map_http_error(error, signal_reason(signal))
-      }
-      match chunk {
-        Some(bytes) => {
-          on_chunk(bytes)
-          loaded = loaded + bytes.length()
-          match on_progress {
-            Some(report) => report({ loaded, total, })
-            None => ()
-          }
-        }
-        None => break
-      }
+  let size = file.size() catch {
+    error => {
+      file.close()
+      raise @types.WebdavError::io(
+        message="读取本地文件长度失败（\{local_path}）：\{error}",
+      )
     }
-    Ok(())
-  } catch {
-    error => Err(error)
   }
-  stream.close()
-  match outcome {
-    Ok(_) => ()
-    Err(error) => raise error
-  }
+  (file, size.to_int())
 }

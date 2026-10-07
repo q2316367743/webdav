@@ -75,6 +75,9 @@ pub(all) enum WebdavErrorDetail {
   Partial(operation~ : String, failures~ : Array[ResourceFailure])
   /// 请求被 `AbortSignal` 取消；`reason` 为调用方给出的取消原因
   Cancelled(String?)
+  /// 本地文件系统错误：仅路径形态的传输（`put_file_from_path` /
+  /// `download_to_path`）会产生，`message` 为中文描述 + 原始系统错误
+  Io(message~ : String)
 }
 
 ///|
@@ -131,6 +134,13 @@ pub fn WebdavError::cancelled(reason? : String) -> WebdavError {
 }
 
 ///|
+/// 构造「本地文件系统错误」：打开 / 读取 / 创建 / 写入本地文件失败时使用，
+/// 与 HTTP 层错误区分开（本地问题不该被当成服务端问题排查）。
+pub fn WebdavError::io(message~ : String) -> WebdavError {
+  WebdavError(Io(message~))
+}
+
+///|
 /// 人读的中文错误描述，便于日志与字符串插值。
 pub fn WebdavError::to_string(self : WebdavError) -> String {
   match self.detail() {
@@ -152,6 +162,7 @@ pub fn WebdavError::to_string(self : WebdavError) -> String {
         Some(text) => "请求已取消（\{text}）"
         None => "请求已取消"
       }
+    Io(message~) => "本地文件错误: " + message
   }
 }
 

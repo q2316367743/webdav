@@ -3,7 +3,7 @@
 ## 模块概览
 
 - 模块：`q2316367743/webdav`（moon.mod，`source = "src"`，`preferred_target = "native"`——moonhttp 基于 moonbitlang/async，仅 native 可用）
-- 依赖：`q2316367743/moonhttp@0.5.0`（HTTP 客户端，流式请求体 / 流式响应 / 取消信号）、`Milky2018/xml@0.5.0`（XML 解析）、`moonbitlang/async@0.22.2`（测试与演示程序；`src/client` 另引其 `io` 子包）
+- 依赖：`q2316367743/moonhttp@0.5.0`（HTTP 客户端，流式请求体 / 流式响应 / 取消信号）、`Milky2018/xml@0.5.0`（XML 解析）、`moonbitlang/async@0.22.2`（测试与演示程序；`src/client` 另引其 `io` 与 `fs` 子包——后者只被路径形态的传输使用）
 - 根包直接 import moonhttp，是为了从门面再导出 `AbortController` / `AbortSignal`（取消能力要让调用方拿到具体类型）
 
 ## 包结构与依赖方向
@@ -13,7 +13,9 @@ src/webdav.mbt + src/moon.pkg   根包（门面）：using 重导出 + 薄包装
         │
         ├──> src/client/   WebdavClient 与全部操作
         │        client（send / url_for / 配置）· status（状态码判定 / 207 失败提取）
-        │        probe_ops（OPTIONS / exists）· file_ops · dir_ops · transfer_ops
+        │        probe_ops（OPTIONS / exists）· dir_ops · transfer_ops
+        │        file_ops（上传三形态：put_file / put_file_stream / put_file_from_path）
+        │        download_ops（get_file 全量 / download_file 回调 / download_to_path 写盘）
         │        ├──> src/types/    公共类型（配置 / FileInfo / Progress / 错误 /
         │        │                  protocol：Depth·Conditions·ServerCapabilities·
         │        │                  PropResult·ResourceFailure / result：Put·Get）
@@ -37,8 +39,11 @@ src/main/   演示程序（executable，.moonignore 已排除，不随包发布�
 | 操作 | 方法 | 关键头 | 请求体 | 期望状态码 |
 |------|------|--------|--------|-----------|
 | `put_file` | PUT | Content-Type（可选）、If-Match / If-None-Match | 流式请求体（BytesReader 拉取，定长 Content-Length） | 200/201/204 |
+| `put_file_stream` | PUT | 同上 | 调用方给的 `&@io.Reader`（定长或 chunked） | 200/201/204 |
+| `put_file_from_path` | PUT | 同上 | 本地文件句柄（定长 = 文件长度，边读边发） | 200/201/204 |
 | `get_file` | GET | If-Match / If-None-Match | - | 200 |
-| `download_file` | GET | 同上 | - | 200（流式） |
+| `download_file` | GET | 同上 | - | 200（流式回调） |
+| `download_to_path` | GET | 同上 | - | 200（流式写盘） |
 | `mkdir` | MKCOL | - | - | 201 |
 | `delete` | DELETE | - | - | 200/204/207（207 有失败条目 → `Partial`） |
 | `exists` | HEAD | - | - | 200/204/304→true，404→false，405/501→回退 PROPFIND |
@@ -77,14 +82,21 @@ moonhttp 默认非 2xx 抛 `HttpError`，但 WebDAV 中 404（exists）/ 207（P
 `failures_from_multistatus` 收集 response 级 status 非 2xx 的条目，非空则抛
 `WebdavError::Partial(operation, failures)`——**不再把部分失败当成功**。
 
-### 3. 流式上传（moonhttp 0.5 流式请求体 + BytesReader）
+### 3. 上传三形态（moonhttp 0.5 流式请求体）
 
 moonhttp 0.5 支持流式请求体（`Config::with_data_from_stream(reader, content_length?)`，
-见 moonhttp docs/20），`put_file` 把入参 `Bytes` 包成 `priv struct BytesReader`
-（实现 `@io.Reader` 的拉取式适配器：`_direct_read` 按块把视图切片搬给泵循环，
-不引入协程与管道、不拷贝整份数据）后走 `with_data_from_stream`，并声明
-`content_length=data.length()`——定长 `Content-Length` 分帧，上传进度每
-64 KiB 分块回调、`total` 已知，经 `Config::with_on_upload_progress` 接线
+见 moonhttp docs/20）。三条入口只差「数据从哪来」，共用 `src/client/file_ops.mbt` 的
+私有 `send_put`：头 / 条件请求 / 进度接线 / 状态码判定只有一份实现。
+
+| 入口 | 数据源 | `content_length` | 分帧 |
+|------|--------|------------------|------|
+| `put_file` | 内存 `Bytes` → `priv struct BytesReader` | `data.length()` | 定长 |
+| `put_file_stream` | 调用方给的 `&@io.Reader` 原样转交 | `content_length?`（`None` → chunked） | 定长或 chunked |
+| `put_file_from_path` | `@fs.open(ReadOnly)` 拿到的 `File`（自身实现 `@io.Reader`） | `File::size()` 快照 | 定长 |
+
+`BytesReader`（实现 `@io.Reader` 的拉取式适配器：`_direct_read` 按块把视图切片搬给
+泵循环，不引入协程与管道、不拷贝整份数据）只服务 `put_file`。上传进度每 64 KiB
+分块回调、声明长度时 `total` 已知，经 `Config::with_on_upload_progress` 接线
 （`adapt_progress` 适配，与下载侧同一套 `Progress`）。
 
 包外实现 `@io.Reader` 依赖 async 的 `ReaderBuffer` 公开构造与 trait 的两个
@@ -92,12 +104,23 @@ moonhttp 0.5 支持流式请求体（`Config::with_data_from_stream(reader, cont
 因此按包抑制 `alert_internal`。曾用的 `BinaryBodyTransport` 传输层装饰器
 （moonhttp 0.4 时代的全量注入方案）已随本次升级整体移除。
 
-### 4. 流式下载
+路径形态的本地文件保障（`open_local_source`）：先 `@fs.open`，`kind() == Directory`
+直接判错；`size()` 取长度快照；请求无论成功失败都 `file.close()`（try/catch 包住
+`send_put` 后用 `Result` 汇聚）。本地打不开 / 是目录 → `WebdavError::Io`，此时
+**还没发出任何请求**。
 
-`Client::stream` 拿到 `StreamResponse` 后循环 `read_some(max_len=chunk_size)`：
-每块交 `on_chunk`，`loaded` 累计回调 `on_progress`，`total` 取响应头 `Content-Length`
-（缺失为 `None`）。结束 / 异常都保证 `close()`（try/catch 包裹 + Result 汇聚）；
-读流异常经 `map_http_error` 归一（取消 → `Cancelled`，其余 → `Http`）。
+### 4. 下载三形态
+
+- `get_file`：`Client::request` 全量读进内存，回 `GetResult`（内容 + 响应元数据）；
+- `download_file` / `download_to_path`：共用私有 `open_get_stream`（组装 GET →
+  `Client::stream` → 非 200 先 `close()` 再抛 `Api`），再循环
+  `read_some(max_len=chunk_size)`：每块交 `on_chunk`（内存消费）或
+  `file.write(chunk)`（写盘，async 只能在内部做），`loaded` 累计回调 `on_progress`，
+  `total` 取响应头 `Content-Length`（缺失为 `None`）。
+- 结束 / 异常都保证 `close()`（try/catch 包裹 + Result 汇聚）；读流异常经
+  `map_http_error` 归一（取消 → `Cancelled`，其余 → `Http`）；写盘异常 → `Io`。
+- `download_to_path` 刻意**先请求、拿到 200 才 `@fs.create` 本地文件**：404 等
+  失败不会清空本地同名文件；失败或取消时留下部分内容（不自动删除）。
 
 ### 5. XML 解析（src/xmlutil）
 
@@ -139,15 +162,22 @@ PROPFIND `Depth:0` allprop 再判定（404 → false，其余重抛）。这样�
 - 黑盒：`src/client/*_test.mbt` 用 `MockTransport`（moonhttp/transport 公开）
   断言每个操作的请求形状（方法 / URL / 头 / body）与错误分支；`probe_ops_test`
   覆盖 OPTIONS 解析与 HEAD 回退，`transfer_ops_test` 覆盖 207 部分失败（`Partial`）、
-  `dir_ops_test` 覆盖 Depth 与绝对 href 归一、`file_ops_test` 覆盖新返回类型与条件头；
+  `dir_ops_test` 覆盖 Depth 与绝对 href 归一、`file_ops_test` 覆盖三种上传形态
+  （含 `Io` 分支：本地文件不存在 / 路径是目录时**不发请求**）、
+  `download_ops_test` 覆盖 `get_file` / `download_file` / `download_to_path`
+  （分块写盘、覆盖已有文件、404 不创建本地文件、父目录不存在 → `Io`）；
   `src/webdav_test.mbt` 从 `@webdav` 门面走完整操作流（`from_responses` 按序供响应，
-  含 OPTIONS 与门面重导出 / 取消信号用例）。
-- 当前规模：`moon test --target native` 55 个用例全绿。
+  含 OPTIONS、门面流式上传 + 下载到本地路径、门面重导出 / 取消信号用例）。
+  坑：`MockTransport` 记录 `RequestBody::Stream` 引用但**不消费**，
+  `MemoryReader` / `PipeRead` 的生产者协程会永久阻塞并在收尾时报 dead lock，
+  故 mock 用例统一用 `temp_reader`（临时文件 + `@fs.File`）造 pull 型流。
+- 当前规模：`moon test --target native` 66 个用例全绿。
 - 一键测试：`bash src/main/run_tests.sh`——自动起 WebDAV 服务端（优先
   brew 的 `webdav`，回退 `src/main/testdata/verify_server.py`）、跑
   `moon test` 全套测试、连真实服务端跑 `moon run src/main` 全流程
-  （含 testdata 真实文件往返：`binary.bin` 100 KiB 走 64 KiB 分块进度、
-  中文文件名端到端编码），最后关闭服务端并汇总 PASS/FAIL。
+  （含 testdata 真实文件往返：`binary.bin` 100 KiB 走 `put_file_from_path`
+  本地路径上传（64 KiB 分块进度）→ `download_to_path` 写盘 → 逐字节比对，
+  以及 `put_file` 全量形态 + 中文文件名端到端编码），最后关闭服务端并汇总 PASS/FAIL。
   `src/main/testdata/` 即真实测试文件（样本文件 + 兜底服务端脚本）。
 
   兜底服务器 `verify_server.py` 刻意对齐协议细节：`Depth:1` 不递归、
@@ -176,10 +206,13 @@ PROPFIND `Depth:0` allprop 再判定（404 → false，其余重抛）。这样�
 
 ## 注意事项
 
-- `put_file` 的 `data` 契约仍是「完整内容已在内存」（签名 `data~ : Bytes`），
-  上传过程不再额外整份拷贝；真正的「从磁盘边读边发」留待后续 `put_file_stream`；
+- 上传 / 下载各有三种形态，选择口径：内容已在内存 → `put_file` / `get_file`；
+  数据源是流或磁盘上的大文件 → `put_file_stream` / `put_file_from_path`；
+  要落盘 → `download_to_path`（同步 `on_chunk` 回调里 await 不了 async 写盘）；
 - `mkdir` 是单级（409 = 父不存在），递归创建留待后续；
 - 尚无 LOCK/UNLOCK 与 `If:` 锁令牌（`has_lock()` 只做能力探测）；
+- 本地文件系统错误走 `WebdavError::Io`（`to_string()` 为「本地文件错误: …」），
+  与 HTTP 层错误分开；`WebdavErrorDetail` 因此从五类变六类（下游穷尽 match 需补分支）；
 - 扩展方法（REPORT / ACL 等）在 moonhttp 侧可直接经 `Method::Other(name)` 发送，
   架构上不需要改动，属于「加接口」；
 - 根包 `DEFAULT_TIMEOUT_MS` / `DEFAULT_PROP_NS` 是从子包常量再导出的同值 const；

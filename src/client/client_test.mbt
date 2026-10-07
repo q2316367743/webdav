@@ -97,6 +97,17 @@ async fn capture_error(
 }
 
 ///|
+/// 造一个 pull 型读取流（临时文件 + `@fs.File`）：`MockTransport` 不消费
+/// 请求体，`MemoryReader` / `PipeRead` 的生产者协程会一直阻塞，测试收尾时
+/// 报 dead lock（moonhttp 的 mock 契约），故 mock 用例统一用文件流。
+/// 返回的句柄由调用方负责 `close()`。
+async fn temp_reader(content : Bytes) -> @fs.File {
+  let path = @fs.tmpdir(prefix="webdav-stream-") + "/payload.bin"
+  @fs.write_file(path, content)
+  @fs.open(path, mode=@fs.Mode::ReadOnly)
+}
+
+///|
 async test "mkdir 发出 MKCOL 到编码后的 URL" {
   let (client, mock) = dav_client(dav_response(201, "text/plain", ""))
   client.mkdir(path="/相册/新建")

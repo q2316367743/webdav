@@ -27,6 +27,7 @@ pub fn WebdavError::api(status~ : Int, operation~ : String, message~ : String) -
 pub fn WebdavError::cancelled(reason? : String) -> Self
 pub fn WebdavError::detail(Self) -> WebdavErrorDetail
 pub fn WebdavError::http(@moonhttp.HttpError) -> Self
+pub fn WebdavError::io(message~ : String) -> Self
 pub fn WebdavError::output(Self, &Logger) -> Unit
 pub fn WebdavError::partial(operation~ : String, failures~ : Array[ResourceFailure]) -> Self
 pub fn WebdavError::to_string(Self) -> String
@@ -115,6 +116,7 @@ pub(all) enum WebdavErrorDetail {
   Api(status~ : Int, operation~ : String, message~ : String)
   Partial(operation~ : String, failures~ : Array[ResourceFailure])
   Cancelled(String?)
+  Io(message~ : String)
 }
 
 // Type aliases

@@ -1,7 +1,8 @@
 // WebDAV 客户端实现包：实例构造、请求管线（URL 拼接 / 统一状态检查）、
-// 全部 WebDAV 操作（按文件分组：文件 / 目录 / 移动复制）。
+// 全部 WebDAV 操作（按文件分组：上传 / 下载 / 目录 / 移动复制）。
 // 网络交互全部经由 moonhttp；状态码由本层统一判定，
 // 因此 moonhttp 配置里 validate_status 恒为放行。
+// async/fs 只被路径形态的传输使用（put_file_from_path / download_to_path）。
 // BytesReader 在包外实现 @io.Reader：ReaderBuffer 及其构造器被 async
 // 标注 internal（moonhttp 已验证该路径是包外实现 Reader 的预期方式，
 // 见其 stream_wire_test 的前提验证），故按包抑制这条告警。
@@ -9,6 +10,7 @@ warnings = "-alert_internal"
 
 import {
   "Milky2018/xml",
+  "moonbitlang/async/fs",
   "moonbitlang/async/io",
   "q2316367743/moonhttp",
   "q2316367743/moonhttp/config",
@@ -18,7 +20,7 @@ import {
   "q2316367743/webdav/xmlutil",
 }
 
-// 黑盒测试注入 MockTransport 需要 transport 与 async 运行时。
+// 黑盒测试注入 MockTransport 需要 transport、async 运行时与临时文件系统。
 import {
   "moonbitlang/async",
   "moonbitlang/core/encoding/utf8",
