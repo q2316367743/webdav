@@ -70,7 +70,8 @@ async fn main {
 | 移动 / 复制 | `move_path`、`copy_path`（覆盖语义 + `Depth`） |
 | 自定义属性 | `set_properties` / `get_properties` / `get_properties_with_status`（PROPPATCH / 按名 PROPFIND，保留 404 状态） |
 | 能力探测 | `options`（`DAV` / `Allow` / `Server` → `ServerCapabilities`） |
-| 协议控制 | 所有方法的 `conditions?`（`If-Match` / `If-None-Match`）与 `signal?`（`AbortController` 取消） |
+| 锁 | `lock`（独占写锁）、`refresh_lock`（续期）、`unlock`、`get_locks`（`lockdiscovery` 锁发现）；令牌传给 `Conditions::new(lock_token=…)` 后写操作自动带 `If: (<令牌>)` |
+| 协议控制 | 所有方法的 `conditions?`（`If-Match` / `If-None-Match` / `lock_token`）与 `signal?`（`AbortController` 取消） |
 
 统一错误为 `WebdavError`（`detail()` 区分网络 / XML 解析 / 非期望状态码 /
 207 部分失败 / 已取消 / 本地文件六类，`to_string()` 为中文人读描述）；
@@ -79,7 +80,8 @@ async fn main {
 ## 已知限制
 
 - `mkdir` 单级创建（父目录不存在得 409）。
-- 尚无 LOCK/UNLOCK 与 `If:` 锁令牌；`options().has_lock()` 只能探测服务端是否支持。
+- 锁只做独占写锁：不做共享锁、带标签 `If`、lock-null 创建清理与 423 自动重试；
+  锁发现依赖服务端实现 `lockdiscovery`（hacdias/webdav 只回空元素）。
 - 路径形态的传输只覆盖单文件；目录镜像 / 同步、Range 断点续传、
   push 型（Writer）上传仍是路线图。
 - 更多缺口与 P1 / P2 路线图见 [docs/03-gap-analysis.md](docs/03-gap-analysis.md)。

@@ -13,6 +13,8 @@ pub fn ascii_upper(String) -> String
 
 pub fn href_to_path(String) -> String
 
+pub fn normalize_lock_token(String) -> String
+
 pub fn parse_ascii_int(String) -> Int?
 
 pub fn percent_decode(String) -> String
@@ -35,11 +37,21 @@ pub fn WebdavError::xml(@xml.XmlError) -> Self
 pub impl Show for WebdavError
 
 // Types and methods
+pub(all) struct ActiveLock {
+  token : String
+  scope : String
+  depth : String?
+  owner : String?
+  timeout : String?
+  lockroot : String?
+}
+
 pub(all) struct Conditions {
   if_match : String?
   if_none_match : String?
+  lock_token : String?
 }
-pub fn Conditions::new(if_match? : String, if_none_match? : String) -> Self
+pub fn Conditions::new(if_match? : String, if_none_match? : String, lock_token? : String) -> Self
 
 pub(all) enum Depth {
   Zero
@@ -66,6 +78,12 @@ pub(all) struct GetResult {
   content_length : Int?
   etag : String?
   last_modified : String?
+}
+
+pub(all) struct LockResult {
+  status : Int
+  created : Bool
+  lock : ActiveLock
 }
 
 pub(all) struct Progress {

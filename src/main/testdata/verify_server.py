@@ -2,15 +2,20 @@
 """最小 WebDAV 验证服务器（run_tests.sh 的回退依赖）。
 
 仅用于本地验证 MoonBit WebDAV 客户端：支持 OPTIONS/PUT/MKCOL/GET/HEAD/
-DELETE/MOVE/COPY/PROPFIND/PROPPATCH，死属性存内存（每次启动清空）。
-brew 版 `webdav`（hacdias）可用时优先用它，本脚本兜底——区别是本脚本
-的 PROPPATCH 死属性真的能读回。
+DELETE/MOVE/COPY/PROPFIND/PROPPATCH/LOCK/UNLOCK，死属性与锁存内存
+（每次启动清空）。brew 版 `webdav`（hacdias）可用时优先用它，本脚本
+兜底——区别是本脚本的 PROPPATCH 死属性真的能读回，PROPFIND 也能
+读到 `lockdiscovery`（hacdias 只回空元素）。
 
 刻意对齐协议的几处细节（用于验证客户端的 P0 修复）：
 - Depth:1 不递归（只回直接子项），Depth:infinity 才回整棵树；
 - propname 只回属性名；按名请求时「没存过的死属性」回 404 propstat；
 - 环境变量 VERIFY_NO_HEAD_PREFIX 命中前缀的 HEAD 返回 405，
   用来验证客户端的 HEAD → PROPFIND Depth:0 回落。
+
+锁的刻意取舍：LOCK 只作用于已存在的资源（不实现 lock-null 创建，
+需要 201 的场景由 Mock 单测覆盖）；`If` 与 `Lock-Token` 里的令牌
+必须带尖括号，否则 400 / 412。
 
 用法：python3 verify_server.py [port] [root]
 默认：8083 /tmp/webdav-verify-root
@@ -24,6 +29,8 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from urllib.parse import unquote, urlparse
 from xml.sax.saxutils import escape
 
+from verify_lock import LOCK_TABLE, LockMixin, lockdiscovery_xml
+
 PORT = int(sys.argv[1]) if len(sys.argv) > 1 else 8083
 ROOT = sys.argv[2] if len(sys.argv) > 2 else "/tmp/webdav-verify-root"
 DEAD_PROPS = {}  # 服务器路径 -> {属性名: 值}
@@ -31,7 +38,7 @@ NS_DEAD = "urn:q2316367743:webdav:prop"
 NO_HEAD_PREFIX = os.environ.get("VERIFY_NO_HEAD_PREFIX", "")
 
 
-class Handler(BaseHTTPRequestHandler):
+class Handler(LockMixin, BaseHTTPRequestHandler):
     protocol_version = "HTTP/1.1"
 
     def log_message(self, fmt, *args):
@@ -58,12 +65,14 @@ class Handler(BaseHTTPRequestHandler):
     # ---- 方法 ----
     def do_OPTIONS(self):
         self.send_response(200)
-        self.send_header("Allow", "OPTIONS, GET, HEAD, PUT, MKCOL, DELETE, MOVE, COPY, PROPFIND, PROPPATCH")
+        self.send_header("Allow", "OPTIONS, GET, HEAD, PUT, MKCOL, DELETE, MOVE, COPY, PROPFIND, PROPPATCH, LOCK, UNLOCK")
         self.send_header("DAV", "1, 2")
         self.send_header("Content-Length", "0")
         self.end_headers()
 
     def do_PUT(self):
+        if self._locked():
+            return
         length = int(self.headers.get("Content-Length", 0))
         data = self.rfile.read(length)
         path = self.fs_path(self.path)
@@ -97,6 +106,8 @@ class Handler(BaseHTTPRequestHandler):
             self.send(404, b"")
 
     def do_DELETE(self):
+        if self._locked():
+            return
         path = self.fs_path(self.path)
         if os.path.isdir(path):
             shutil.rmtree(path)
@@ -107,6 +118,8 @@ class Handler(BaseHTTPRequestHandler):
         self.send(404, b"not found")
 
     def do_MOVE(self):
+        if self._locked():
+            return
         src, dst = self.fs_path(self.path), self.dest_path()
         if not os.path.exists(src):
             return self.send(404, b"not found")
@@ -117,6 +130,8 @@ class Handler(BaseHTTPRequestHandler):
         self.send(201, b"")
 
     def do_COPY(self):
+        if self._locked():
+            return
         src, dst = self.fs_path(self.path), self.dest_path()
         if not os.path.exists(src):
             return self.send(404, b"not found")
@@ -171,7 +186,11 @@ class Handler(BaseHTTPRequestHandler):
         ok, missing = [], []
         if mode == "named":
             for name in names:
-                if name in dead:
+                if name == "lockdiscovery":
+                    # lockdiscovery 是 DAV: 活属性：有锁展开 activelock，无锁回空元素
+                    ok.append(lockdiscovery_xml(
+                        LOCK_TABLE.find_by_path(urlparse(url_path).path)))
+                elif name in dead:
                     ok.append('<X:%s xmlns:X="%s">%s</X:%s>' % (name, NS_DEAD, escape(dead[name]), name))
                 else:
                     missing.append('<X:%s xmlns:X="%s"/>' % (name, NS_DEAD))
@@ -209,6 +228,8 @@ class Handler(BaseHTTPRequestHandler):
         return "".join(parts)
 
     def do_PROPPATCH(self):
+        if self._locked():
+            return
         length = int(self.headers.get("Content-Length", 0))
         xml_body = self.rfile.read(length).decode("utf-8")
         url_path = urlparse(self.path).path

@@ -7,6 +7,10 @@ import {
 }
 
 // Values
+pub fn lockinfo_body(owner? : String) -> String raise @xml.WriterError
+
+pub fn parse_lockdiscovery(String) -> Array[@types.ActiveLock] raise @xml.XmlError
+
 pub fn parse_multistatus(String) -> Array[ParsedResource] raise @xml.XmlError
 
 pub fn propfind_allprop_body() -> String

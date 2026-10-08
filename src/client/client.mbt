@@ -112,7 +112,22 @@ async fn WebdavClient::send(
 }
 
 ///|
-/// 把条件请求对象落到请求头上：`If-Match` / `If-None-Match`。
+/// 归一化锁令牌为 `Lock-Token` 头形态：`<令牌>`。
+/// 令牌可能自带尖括号（`Lock-Token` 响应头就是这种形状），也可能不带，
+/// 统一只包一层，不会出现 `<<令牌>>`。
+fn lock_token_uri(token : String) -> String {
+  "<" + @types.normalize_lock_token(token) + ">"
+}
+
+///|
+/// `If` 头里的锁令牌形态：`(<令牌>)`（RFC 4918 §10.4.1 的无标签列表）。
+fn lock_token_if_value(token : String) -> String {
+  "(" + lock_token_uri(token) + ")"
+}
+
+///|
+/// 把条件请求对象落到请求头上：`If-Match` / `If-None-Match`，以及
+/// 写操作携带锁令牌所需的 `If` 头。归一化后为空的锁令牌视为未设置。
 fn apply_conditions(
   cfg : @config.Config,
   conditions : @types.Conditions?,
@@ -126,6 +141,14 @@ fn apply_conditions(
       }
       match cond.if_none_match {
         Some(etag) => out = out.with_header("If-None-Match", etag)
+        None => ()
+      }
+      match cond.lock_token {
+        Some(token) =>
+          // 归一化后为空的令牌不发 `If: (<>)`，等同未设置。
+          if @types.normalize_lock_token(token) != "" {
+            out = out.with_header("If", lock_token_if_value(token))
+          }
         None => ()
       }
       out

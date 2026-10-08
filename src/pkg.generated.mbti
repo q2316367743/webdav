@@ -26,6 +26,8 @@ pub using @abort {type AbortController}
 
 pub using @abort {type AbortSignal}
 
+pub using @types {type ActiveLock}
+
 pub using @types {type Conditions}
 
 pub using @types {type Depth}
@@ -33,6 +35,8 @@ pub using @types {type Depth}
 pub using @types {type FileInfo}
 
 pub using @types {type GetResult}
+
+pub using @types {type LockResult}
 
 pub using @types {type Progress}
 

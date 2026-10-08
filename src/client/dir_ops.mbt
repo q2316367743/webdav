@@ -8,9 +8,12 @@ pub const DEFAULT_PROP_NS : String = "urn:q2316367743:webdav:prop"
 
 ///|
 /// 创建目录（MKCOL）。单级创建：父目录不存在时服务端通常返回 409。
+/// `conditions` 可用于 `If-None-Match: *`（父目录已存在时不要覆盖）
+/// 或携带锁令牌。
 pub async fn WebdavClient::mkdir(
   self : WebdavClient,
   path~ : String,
+  conditions? : @types.Conditions,
   signal? : @moonhttp.AbortSignal,
 ) -> Unit raise @types.WebdavError {
   ignore(
@@ -18,6 +21,7 @@ pub async fn WebdavClient::mkdir(
       operation="MKCOL",
       http_method=@config.Method::Other("MKCOL"),
       path~,
+      conditions?,
       ok=[201],
       signal?,
     ),
@@ -132,7 +136,7 @@ pub async fn WebdavClient::set_properties(
     props,
     ns_uri=ns_uri.unwrap_or(DEFAULT_PROP_NS),
   ) catch {
-    error => raise invalid_prop_name(error)
+    error => raise invalid_request_body(error, operation="PROPPATCH")
   }
   ignore(
     self.send(
@@ -189,7 +193,7 @@ pub async fn WebdavClient::get_properties_with_status(
 ) -> Array[@types.PropResult] raise @types.WebdavError {
   let ns = ns_uri.unwrap_or(DEFAULT_PROP_NS)
   let body = @xmlutil.propfind_named_body(names, ns_uri=ns) catch {
-    error => raise invalid_prop_name(error)
+    error => raise invalid_request_body(error, operation="PROPFIND")
   }
   let resources = self.send_propfind(
     path~,
@@ -266,13 +270,17 @@ fn same_resource(href : String, server_path : String) -> Bool {
 }
 
 ///|
-/// 属性名 / 请求体非法（WriterError）转成的 400 Api 错误。
-fn invalid_prop_name(error : @xml.WriterError) -> @types.WebdavError {
+/// 请求体 XML 生成失败的统一映射：属性名 / 属性值 / 结构非法（400）。
+/// `operation` 是发起该请求的操作名，用于错误文本。
+fn invalid_request_body(
+  error : @xml.WriterError,
+  operation~ : String,
+) -> @types.WebdavError {
   let detail = match error {
     InvalidName(_) => "属性名不构成合法 XML 名"
     InvalidContent(_) => "属性值包含非法内容"
     InvalidStructure(_) => "XML 结构非法"
     InvalidDeclaration(_) => "XML 声明非法"
   }
-  @types.WebdavError::api(status=400, operation="PROPPATCH", message=detail)
+  @types.WebdavError::api(status=400, operation~, message=detail)
 }

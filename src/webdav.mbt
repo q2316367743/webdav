@@ -16,6 +16,8 @@ pub using @types {
   type ResourceFailure,
   type PutResult,
   type GetResult,
+  type ActiveLock,
+  type LockResult,
 }
 
 ///|

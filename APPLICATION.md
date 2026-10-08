@@ -22,7 +22,7 @@ WebDAV 是文件同步和网盘接入领域的事实标准协议，Nextcloud、o
 
 **本期交付范围（RFC 4918 核心）：**
 
-- **HTTP 方法封装**：完整支持 PROPFIND（列目录 `list` / 单资源属性 `stat` / 按名取属性 `get_properties`）、PROPPATCH（`set_properties` 设置自定义属性）、MKCOL（`mkdir`）、GET（`get_file` 一次取全 / `download_file` 流式下载）、PUT（`put_file`）、DELETE、COPY/MOVE（`copy_path` / `move_path`，含 `overwrite` 开关与 `Destination` 头的 URL 编码）
+- **HTTP 方法封装**：完整支持 PROPFIND（列目录 `list` / 单资源属性 `stat` / 按名取属性 `get_properties`）、PROPPATCH（`set_properties` 设置自定义属性）、MKCOL（`mkdir`）、GET（`get_file` 一次取全 / `download_file` 流式下载）、PUT（`put_file`）、DELETE、COPY/MOVE（`copy_path` / `move_path`，含 `overwrite` 开关与 `Destination` 头的 URL 编码）、LOCK/UNLOCK（`lock` / `refresh_lock` / `unlock`，配合 `get_locks` 读 `lockdiscovery`，锁令牌经 `Conditions::new(lock_token=…)` 让写操作自动带 `If: (<令牌>)`）
 - **Multi-Status 响应解析**：WebDAV 区别于普通 HTTP 的关键在于 `207 Multi-Status` 响应体。一个 PROPFIND 可能对部分资源部分成功、部分失败，需要解析 XML 响应体才能确定每个资源的具体状态。本库提供类型化的 Multi-Status 解析器，将 `response`、`href`、`propstat`、`status` 等 XML 元素解析为 `ParsedResource` 并映射为 `FileInfo` / 属性表，`href` 自动 percent 解码得到显示名
 - **属性系统**：支持 PROPFIND 的 `allprop` 与指定属性（named prop）两种请求模式，解析标准 DAV 属性（`getcontentlength`、`getlastmodified`、`getetag`、`resourcetype`、`getcontenttype`、`creationdate` 等）；PROPPATCH 支持在自定义命名空间下设置属性
 - **传输增强**：流式下载按块回调（`on_chunk` + 可调 `chunk_size`，内存占用与文件大小无关）、上传 / 下载进度回调（`Progress`，含 `percent()` 完成比例）、单请求超时（`timeout_ms`）、路径 percent 编解码（中文、空格等特殊文件名上传 / 下载往返一致）
@@ -33,7 +33,7 @@ WebDAV 是文件同步和网盘接入领域的事实标准协议，Nextcloud、o
 
 - CalDAV（RFC 4791）与 CardDAV（RFC 6352）
 - RFC 3253 版本控制、RFC 3744 ACL、RFC 5323 搜索、RFC 6578 Sync Collection
-- LOCK/UNLOCK 锁定与 Digest 认证
+- Digest 认证
 - 流式上传（当前 `put_file` 接收完整 `Bytes`，待 moonhttp 支持流式请求体后升级）
 - Wasm 后端（moonhttp 依赖 moonbitlang/async 异步运行时，当前仅 native）
 
@@ -42,8 +42,8 @@ WebDAV 是文件同步和网盘接入领域的事实标准协议，Nextcloud、o
 
 - `q2316367743/webdav` 库（v0.1.0，Apache-2.0），可通过 `moon add q2316367743/webdav` 引入 MoonBit 项目
 - **核心 API 可运行**：`create_webdav_client` → `list` / `stat` / `put_file` / `download_file` → Multi-Status 解析 → 统一错误分类的完整链路
-- **测试覆盖**：基于 MockTransport 的单元测试（注入 200/201/204/207 及 404/405/409/412 等响应，不触网，断言请求方法 / 头 / URL 编码、207 解析与非期望状态码到错误的映射）；`src/main` 演示程序对真实 WebDAV 服务器（如本地部署的 hacdias/webdav）做端到端全流程校验，设置 `WEBDAV_TESTDATA` 时追加真实二进制文件与特殊文件名的往返一致性检查
-- **端到端演示**：`src/main/main.mbt` 覆盖“建目录并上传文件（带进度）”“查属性 / 列目录”“流式下载”“移动 / 复制 / 删除并清理”完整场景
+- **测试覆盖**：基于 MockTransport 的单元测试（注入 200/201/204/207 及 404/405/409/412/423 等响应，不触网，断言请求方法 / 头 / URL 编码、207 解析与非期望状态码到错误的映射）；`src/main` 演示程序对真实 WebDAV 服务器（如本地部署的 hacdias/webdav）做端到端全流程校验，设置 `WEBDAV_TESTDATA` 时追加真实二进制文件与特殊文件名的往返一致性检查
+- **端到端演示**：`src/main/main.mbt` 覆盖“建目录并上传文件（带进度）”“查属性 / 列目录”“流式下载”“加锁 / 无令牌写入被拒 / 解锁”“移动 / 复制 / 删除并清理”完整场景
 - **文档**：`README.mbt.md`（安装方式、快速上手、API 概览、已知限制）与 `docs/` 技术文档（01 架构与协议映射、02 API 参考）
 
 

@@ -6,7 +6,8 @@
 
 - `signal? : @webdav.AbortSignal`：取消信号（`@webdav.AbortController` 从门面再导出，
   来自 moonhttp）；取消映射为 `WebdavError::Cancelled(reason?)`。
-- `conditions? : @webdav.Conditions`：条件请求（`If-Match` / `If-None-Match`）。
+- `conditions? : @webdav.Conditions`：条件请求（`If-Match` / `If-None-Match`）
+  与锁令牌（`lock_token` → `If: (<令牌>)`，见「锁」一节）。
 
 ## 创建客户端
 
@@ -63,12 +64,25 @@ let client = @webdav.create_webdav_client({
 `{ loaded : Int, total : Int? }`；`percent() -> Double?` 返回 `0.0 ~ 1.0`
 （总长未知 / 为零时 `None`）。
 
+### ActiveLock / LockResult（锁）
+
+| 字段 | 类型 | 说明 |
+|------|------|------|
+| `lock.token` | String | 已归一化的锁令牌（无尖括号；如 `opaquelocktoken:…` 或服务端的裸数字） |
+| `lock.scope` | String | `"exclusive"`（当前只申请独占写锁；服务端回 `shared` 时原样给出） |
+| `lock.depth` | String? | 服务端原文（`"0"` / `"infinity"`） |
+| `lock.owner` | String? | `<D:owner>` 内文本；缺失或纯空白为 `None` |
+| `lock.timeout` | String? | 服务端原文（`Second-600` / `Infinite`），**不做数值化** |
+| `lock.lockroot` | String? | 锁根 href |
+| `result.status` | Int | LOCK 的状态码（200 或 201） |
+| `result.created` | Bool | 是否新建了 lock-null 资源（`status == 201`） |
+
 ### 协议小类型
 
 | 类型 | 说明 |
 |------|------|
 | `Depth` | `Zero` / `One` / `Infinity`；`to_header()` 得 `"0"` / `"1"` / `"infinity"` |
-| `Conditions` | `Conditions::new(if_match?, if_none_match?)`；省略即不发对应头，取值可含引号或 `*` |
+| `Conditions` | `Conditions::new(if_match?, if_none_match?, lock_token?)`；省略即不发对应头，取值可含引号或 `*`；`lock_token` 归一后为空则不发 `If` |
 | `ServerCapabilities` | OPTIONS 结果：`dav_class : Array[Int]`（无名头按 RFC 4918 §10.1 视为 `[1]`）、`allow : Array[String]`（ASCII 大写）、`server : String?`；`supports(http_method)` 大小写不敏感、`has_lock()` = DAV 含 2 或 Allow 含 LOCK |
 | `PropResult` | `{ name, value, status }`：`status` 是该属性所在 propstat 的状态码，404 表示服务端没这个属性（与「值为空串」区分） |
 | `ResourceFailure` | `{ href, status, message }`：207 里非 2xx 的那个资源 |
@@ -117,6 +131,10 @@ match error.detail() {
 | `set_properties` | `path~, props~ : Array[(String, String)], ns_uri?` | PROPPATCH set |
 | `get_properties` | `path~, names~, ns_uri?` → `Map[String, String]` | 按名 PROPFIND，只收 2xx 属性 |
 | `get_properties_with_status` | 同上 → `Array[PropResult]` | 保留 404 属性的状态 |
+| `lock` | `path~, owner?, timeout?, depth? : Depth` → `LockResult` | LOCK 独占写锁；`timeout` 是 `Timeout` 头原文，`Depth::One` 本地 `Api(400)`，201 → `created` |
+| `refresh_lock` | `path~, token~, timeout?` → `LockResult` | 无请求体的 LOCK + `If`，只刷新超时（不换令牌） |
+| `unlock` | `path~, token~` | UNLOCK，发 `Lock-Token: <令牌>` |
+| `get_locks` | `path~` → `Array[ActiveLock]` | PROPFIND `Depth:0` 读 `lockdiscovery` |
 
 ## 语义细节
 
@@ -199,6 +217,35 @@ let got = client.get_file(path="/d.txt",
 ```
 
 `put_file` / `get_file` 把 ETag 带在结果里，正好喂给下一次的 `if_match`。
+
+### 锁（LOCK / UNLOCK / 锁发现）
+
+```moonbit
+let locked = client.lock(path="/d.txt", owner="me@example.com", timeout="Second-300")
+let token = locked.lock.token                        // 已归一化，可直接复用
+let put = client.put_file(path="/d.txt", data=bytes,
+  conditions=@webdav.Conditions::new(lock_token=token)) // 自动补 If: (<令牌>)
+let again = client.refresh_lock(path="/d.txt", token=token, timeout="Second-600")
+let locks = client.get_locks(path="/d.txt")           // Array[ActiveLock]
+client.unlock(path="/d.txt", token=token)
+```
+
+- **令牌归一化**：传入与解析出的令牌都会 trim 并剥掉一层 `<>`，因此
+  `token="tok"` 与 `token="<tok>"` 等价，拼回头里不会出现 `<<tok>>`；
+  归一后为空视为未设置（写操作不发 `If`），而 `refresh_lock` / `unlock`
+  的空令牌直接本地抛 `Api(400)`，不发请求。
+- **令牌来源**：`lock` 优先取响应头 `Lock-Token`，其次响应体首个 `activelock`；
+  两者都没有 → `Api(operation="LOCK", message="响应缺少锁令牌…")`。响应体 XML
+  非法但有 `Lock-Token` 头时仍算成功（元数据退化为 `scope="exclusive"`）。
+- **写操作**：带 `lock_token` 的 PUT/DELETE/MOVE/COPY/PROPPATCH/MKCOL 自动补
+  `If`（与 `If-Match` / `If-None-Match` 可同时存在）；被锁资源上不带令牌 →
+  服务端 423 → `Api`（`message` 含「资源被锁定」）。本层不自动重试、不自动加锁。
+- **其他状态码**：UNLOCK 令牌不匹配 → 409、刷新锁缺少匹配的 `If` → 412，均映射为 `Api`。
+- **支持面**：只申请独占写锁；不做共享锁（`shared`）、带标签 `If`
+  （`</url> (<令牌>)`）、`Not` / ETag 形态 `If`、多令牌列表、lock-null 的创建清理，
+  以及 `Depth: 1` 的 LOCK（本地 `Api(400)`）。
+- **锁发现**：`get_locks` 走 `Depth:0` 的 PROPFIND 读 `lockdiscovery`；服务端未实现
+  时返回空数组（hacdias/webdav 只回空元素，Python 兜底服务器能读回）。
 
 ### 取消
 

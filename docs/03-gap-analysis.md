@@ -3,8 +3,8 @@
 本文件列出「外部 WebDAV 客户端还缺什么接口」的结论：P0 是**现有 12 个接口的
 协议正确性**问题（已全部落地），P1 / P2 是能力扩展方向。
 
-> 说明：P0 与「传输形态补强」（原 P1 第 2 项 + P2 文件系统便捷层）已落地；
-> 其余 P1 / P2 仍是候选。业界对标基于 RFC 4918（WebDAV）与领域常识整理，
+> 说明：P0、「传输形态补强」与「锁支持」已落地；其余 P1 / P2 仍是候选。
+> 业界对标基于 RFC 4918（WebDAV）与领域常识整理，
 > **未经联网核实**，采用前建议逐条复核。
 
 ## 传输形态补强（已实现）
@@ -22,6 +22,24 @@
 
 配套新增错误分支 `WebdavError::Io`（本地文件打不开 / 创建失败 / 写盘失败），
 细节见 `docs/02-api.md` 的「本地文件形态」与 `docs/01-architecture.md` 的第 3 / 4 节。
+
+## 锁支持（已实现）
+
+RFC 4918 §9.10 / §9.11 的独占写锁闭环：
+
+| 能力 | 入口 | 说明 |
+|------|------|------|
+| 加锁 | `lock(path~, owner?, timeout?, depth?) -> LockResult` | 发 lockinfo（独占写锁）；`Depth::One` 本地 400，201 → `created` |
+| 刷新 | `refresh_lock(path~, token~, timeout?) -> LockResult` | 无请求体的 LOCK + `If`，只续期不换令牌 |
+| 解锁 | `unlock(path~, token~)` | 发 `Lock-Token: <令牌>` |
+| 锁发现 | `get_locks(path~) -> Array[ActiveLock]` | PROPFIND `Depth:0` 读 `lockdiscovery` |
+| 令牌透传 | `Conditions::new(lock_token=…)` | 所有写操作自动补 `If: (<令牌>)`，423 → `Api` |
+
+令牌在客户端统一归一（trim + 剥一层 `<>`，`tok` / `<tok>` 等价）；只做独占写锁，
+不做共享锁、带标签 `If`、lock-null 创建清理与 423 自动重试。细节见
+`docs/02-api.md` 的「锁」与 `docs/01-architecture.md` 第 8 节；
+`src/main/testdata/verify_lock.py` 给 Python 兜底服务器补上锁处理器，
+让加锁 → 无令牌写入 423 → 带令牌写入 → 刷新 → 锁发现 → 解锁在真实链路可跑。
 
 ## P0：协议正确性（已实现）
 
@@ -45,25 +63,24 @@
 
 按「使用频率 × 实现成本」粗排，尚未实现：
 
-1. **LOCK / UNLOCK 与 `If:` 头**：`ServerCapabilities::has_lock()` 已能探测能力，
-   但客户端还不能拿锁令牌做写操作（`If: (<opaquelocktoken:...>)`）。需要新增
-   `lock(path~, owner?, timeout?) -> LockToken` / `unlock(path~, token~)`，
-   并让 `send` 支持 `If` 头。
-2. **递归建目录（`mkdir(parents=true)`）**：现在 MKCOL 单级（父不存在得 409），
+1. **递归建目录（`mkdir(parents=true)`）**：现在 MKCOL 单级（父不存在得 409），
    补一个 `mkdir_all` 逐级 MKCOL、409/405 视为已存在。
-3. **Range / 断点续传**：`download_file` / `download_to_path` 增 `range? : (Int, Int)`，
+2. **Range / 断点续传**：`download_file` / `download_to_path` 增 `range? : (Int, Int)`，
    `get_file` 同理；配套 `Accept-Ranges` / `Content-Range` 解析（当前
    `download_to_path` 失败后只能整体重下）。
-4. **认证面扩展**：moonhttp 只内置 Basic（`with_auth`）。Digest 需要自己拼
+3. **认证面扩展**：moonhttp 只内置 Basic（`with_auth`）。Digest 需要自己拼
    `Authorization`（自定义头可绕过，moonhttp 的 `set_if_absent` 不覆盖用户头），
    Bearer / OAuth 同理；可选做 `AuthProvider` 抽象。
-5. **重定向 / 代理 / 超时策略暴露**：moonhttp 的 `max_redirects`、
+4. **重定向 / 代理 / 超时策略暴露**：moonhttp 的 `max_redirects`、
    `with_proxy`、按请求 timeout 目前被客户端默认配置挡住，可按需透传。
    大文件的整跳超时（覆盖「写完整个请求体」）尤其值得暴露。
-6. **属性删除与命名空间区分**：PROPPATCH 现在只 set；补 remove
+5. **属性删除与命名空间区分**：PROPPATCH 现在只 set；补 remove
    （`<D:remove>`），并让 `PropResult` 带上命名空间以免同名属性撞车。
-7. **取消语义细化**：区分「用户取消」与「超时取消」（moonhttp 的
+6. **取消语义细化**：区分「用户取消」与「超时取消」（moonhttp 的
    `AbortSignal::reason()` 已能携带原因，`Cancelled(reason)` 已预留位置）。
+7. **锁能力扩展**：共享锁（`shared`）、带标签 `If`（`</url> (<令牌>)`）、
+   `Not` / ETag 形态 `If`、多令牌列表、lock-null 的创建清理、按 423 自动重试，
+   以及 `Depth: 1` 的 LOCK。
 
 ## P2：更远的方向（按需）
 
@@ -83,6 +100,6 @@
 
 ## 与本次实现的对应关系
 
-P0 的行与「传输形态补强」表已在代码中落地，逐项见 `docs/01-architecture.md`
-的「协议映射」与 `docs/02-api.md` 的签名说明；P1 / P2 其余条目仍为路线图，
-**未实现**，不构成当前 API 契约。
+P0 的行、「传输形态补强」与「锁支持」表已在代码中落地，逐项见
+`docs/01-architecture.md` 的「协议映射」与 `docs/02-api.md` 的签名说明；
+P1 / P2 其余条目仍为路线图，**未实现**，不构成当前 API 契约。

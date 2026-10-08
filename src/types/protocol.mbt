@@ -25,20 +25,26 @@ pub fn Depth::to_header(self : Depth) -> String {
 }
 
 ///|
-/// 条件请求：`If-Match` / `If-None-Match`，取值是服务端给出的 ETag
-/// （含引号，原样透传）或通配符 `*`。用于乐观并发控制。
+/// 条件请求：`If-Match` / `If-None-Match` / `If`，前者取值是服务端给出的
+/// ETag（含引号，原样透传）或通配符 `*`，用于乐观并发控制；
+/// `lock_token` 是要随请求提交的锁令牌，渲染成 `If: (<令牌>)`
+/// （RFC 4918 §10.4.1 的无标签列表形态）。
 pub(all) struct Conditions {
   if_match : String?
   if_none_match : String?
+  lock_token : String?
 }
 
 ///|
-/// 按需构造条件：两个字段都可省略，省略即不发送对应请求头。
+/// 按需构造条件：字段都可省略，省略即不发送对应请求头。
+/// `lock_token` 可带或不带外层 `<>`，由 `normalize_lock_token` 统一形状；
+/// 归一化后为空串时视为未设置（不会发出 `If: ()` 这种坏头）。
 pub fn Conditions::new(
   if_match? : String,
   if_none_match? : String,
+  lock_token? : String,
 ) -> Conditions {
-  { if_match, if_none_match, }
+  { if_match, if_none_match, lock_token, }
 }
 
 ///|
