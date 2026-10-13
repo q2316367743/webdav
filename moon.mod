@@ -11,7 +11,7 @@
 
 name = "q2316367743/webdav"
 
-version = "0.3.0"
+version = "0.1.0"
 
 readme = "README.mbt.md"
 
