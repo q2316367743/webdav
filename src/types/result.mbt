@@ -6,7 +6,7 @@
 /// `put_file` 的结果。
 pub(all) struct PutResult {
   /// HTTP 状态码（200 覆盖写 / 201 新建 / 204 无响应体）
-  status : Int
+  status : Int32
   /// 是否新建了资源（状态码为 201）
   created : Bool
   /// 响应 `ETag` 头（含引号原样；服务端未返回时为 `None`）
@@ -23,11 +23,11 @@ pub(all) struct GetResult {
   /// 响应体字节
   content : Bytes
   /// HTTP 状态码
-  status : Int
+  status : Int32
   /// 响应 `Content-Type` 头
   content_type : String?
   /// 响应 `Content-Length` 头（服务端未返回时为 `None`）
-  content_length : Int?
+  content_length : Int32?
   /// 响应 `ETag` 头
   etag : String?
   /// 响应 `Last-Modified` 头

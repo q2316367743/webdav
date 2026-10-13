@@ -3,7 +3,7 @@
 
 ///|
 /// 常见 WebDAV 状态码的中文注解（用于 Api 错误消息）。
-fn status_message(status : Int) -> String {
+fn status_message(status : Int32) -> String {
   match status {
     200 => "成功"
     201 => "已创建"
@@ -43,7 +43,7 @@ fn body_hint(response : @moonhttp.Response) -> String {
 fn check_status(
   response : @moonhttp.Response,
   operation~ : String,
-  ok~ : Array[Int],
+  ok~ : Array[Int32],
 ) -> @moonhttp.Response raise @types.WebdavError {
   if ok.contains(response.status) {
     response
@@ -88,7 +88,7 @@ fn failures_from_multistatus(
 fn check_status_allow_partial(
   response : @moonhttp.Response,
   operation~ : String,
-  ok~ : Array[Int],
+  ok~ : Array[Int32],
 ) -> Unit raise @types.WebdavError {
   let checked = check_status(response, operation~, ok~)
   if checked.status == 207 {

@@ -12,7 +12,7 @@
 /// 单次上传独占一个实例，光标走到尾部即 EOF。
 priv struct BytesReader {
   data : Bytes
-  mut pos : Int
+  mut pos : Int32
   // read_some 复用这块内部缓冲做中转，须与实例同生命周期；
   // 重放（423 自动重试）时整块换成新缓冲，避免上一轮残留字节
   mut buf : @io.ReaderBuffer
@@ -29,7 +29,7 @@ impl @io.Reader for BytesReader with fn _direct_read(
   dst,
   offset~,
   max_len~,
-) -> Int {
+) -> Int32 {
   let remaining = self.data.length() - self.pos
   if remaining <= 0 {
     return 0
@@ -105,7 +105,7 @@ pub async fn WebdavClient::put_file_stream(
   self : WebdavClient,
   path~ : String,
   reader~ : &@io.Reader,
-  content_length? : Int,
+  content_length? : Int32,
   content_type? : String,
   conditions? : @types.Conditions,
   on_progress? : (@types.Progress) -> Unit,
@@ -174,7 +174,7 @@ async fn WebdavClient::send_put(
   self : WebdavClient,
   path~ : String,
   reader~ : &@io.Reader,
-  content_length? : Int,
+  content_length? : Int32,
   content_type? : String,
   conditions? : @types.Conditions,
   on_progress? : (@types.Progress) -> Unit,
@@ -224,7 +224,7 @@ async fn WebdavClient::send_put(
 fn build_put_config(
   url : String,
   reader : &@io.Reader,
-  content_length : Int?,
+  content_length : Int32?,
   content_type : String?,
   conditions : @types.Conditions?,
   on_progress : ((@types.Progress) -> Unit)?,
@@ -249,7 +249,7 @@ fn build_put_config(
 /// 而不是把它当成服务端返回的错误）。
 async fn open_local_source(
   local_path : String,
-) -> (@fs.File, Int) raise @types.WebdavError {
+) -> (@fs.File, Int32) raise @types.WebdavError {
   let file = @fs.open(local_path, mode=@fs.Mode::ReadOnly) catch {
     error =>
       raise @types.WebdavError::io(

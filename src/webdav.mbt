@@ -34,7 +34,7 @@ pub using @moonhttp {type AbortController, type AbortSignal}
 
 ///|
 /// 默认单请求超时（毫秒），与 `@types.DEFAULT_TIMEOUT_MS` 同值。
-pub const DEFAULT_TIMEOUT_MS : Int = @types.DEFAULT_TIMEOUT_MS
+pub const DEFAULT_TIMEOUT_MS : Int32 = @types.DEFAULT_TIMEOUT_MS
 
 ///|
 /// 创建 WebDAV 客户端：所有操作以方法形式挂在返回值上。

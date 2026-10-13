@@ -3,7 +3,7 @@
 
 ///|
 /// 尝试把属性文本解析为整数，失败（含空串 / 非数字）返回 `None`。
-fn parse_prop_int(value : String?) -> Int? {
+fn parse_prop_int(value : String?) -> Int32? {
   match value {
     Some(text) => @types.parse_ascii_int(text)
     None => None

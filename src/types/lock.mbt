@@ -72,7 +72,7 @@ pub(all) struct ActiveLock {
 pub(all) struct LockResult {
   /// HTTP 状态码：200 表示锁施加在既有资源上，201 表示服务端借这次锁
   /// 创建了空资源（lock-null）
-  status : Int
+  status : Int32
   /// 是否 201（lock-null 资源被创建）
   created : Bool
   /// 服务端确认的锁

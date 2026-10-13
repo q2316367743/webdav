@@ -99,6 +99,12 @@ mooncakes.io 上的版本号取自 `moon.mod` 的 `version`，GitHub tag 只是�
 - **发布包不含 `src/main`**：`.moonignore` 里写了 `src/main`，它控制的是打包内容
   （`moonignore` 的语义即「哪些文件会被打包」），演示程序与 testdata 不进发布 zip；
   `moon check` / `moon test` 仍覆盖该包。
+- **`Int` 必须写成 `Int32`**：moonc v0.10.15（moon 0.1.20261012）起 `Int`
+  与 `Int32` 是同一类型（native 上也是 32 位：实测 `Int` 的 `2147483647 + 1`
+  回绕成 `-2147483648`），而 `moonfmt` 会把源码里的 `Int` 一律打印成 `Int32`。
+  所以 `src/` 下的 `Int32` 是**格式化后的既定形态**，不要手改回 `Int`——
+  改了 `moon fmt --check`（门禁 2）立刻失败。`moon info` 生成的 `.mbti`
+  仍打印成 `Int`，`02-api.md` 等文档里的 `Int` 同理，与源码指同一类型。
 - **超时**：两个 job 都是 20 分钟。首次冷编译 native 依赖通常远低于此；若逼近上限，
   再统一放宽并考虑给 `~/.moon` 加缓存。
 - **macOS 自带 bash 3.2 的坑**：`$VAR` 后面紧跟全角字符（如 `$STATUS）`）时，3.2 会把

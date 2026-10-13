@@ -15,7 +15,7 @@ pub(all) struct WebdavConfig {
   base_url : String
   username : String?
   password : String?
-  timeout_ms : Int?
+  timeout_ms : Int32?
   retry_on_423 : Bool?
 } derive(Default)
 
@@ -24,7 +24,7 @@ pub extend WebdavConfig with Default::{default}
 
 ///|
 /// 默认单请求超时：30 秒。
-pub const DEFAULT_TIMEOUT_MS : Int = 30_000
+pub const DEFAULT_TIMEOUT_MS : Int32 = 30_000
 
 ///|
 /// PROPFIND 解析出的资源条目（文件或目录）。
@@ -36,7 +36,7 @@ pub(all) struct FileInfo {
   /// 是否为目录（WebDAV 集合，collection）
   is_dir : Bool
   /// 字节大小；目录或未知时为 `None`
-  content_length : Int?
+  content_length : Int32?
   /// MIME 类型；目录通常为 `None`
   content_type : String?
   /// 最后修改时间（RFC 1123 格式原样，如 `Mon, 10 Mar 2025 12:00:00 GMT`）
@@ -51,9 +51,9 @@ pub(all) struct FileInfo {
 /// 传输进度快照，由上传 / 下载回调接收。
 pub(all) struct Progress {
   /// 已传输字节数
-  loaded : Int
+  loaded : Int32
   /// 总字节数；服务端未返回长度时为 `None`
-  total : Int?
+  total : Int32?
 }
 
 ///|
@@ -74,7 +74,7 @@ pub(all) enum WebdavErrorDetail {
   /// WebDAV 响应的 XML 解析失败
   Xml(@xml.XmlError)
   /// 服务端返回了该操作不期望的状态码，`message` 为中文人读描述
-  Api(status~ : Int, operation~ : String, message~ : String)
+  Api(status~ : Int32, operation~ : String, message~ : String)
   /// 207 Multi-Status 中有资源失败（COPY / MOVE / DELETE 的批量语义）
   Partial(operation~ : String, failures~ : Array[ResourceFailure])
   /// 请求被 `AbortSignal` 取消；`reason` 为调用方给出的取消原因
@@ -114,7 +114,7 @@ pub fn WebdavError::xml(error : @xml.XmlError) -> WebdavError {
 ///|
 /// 构造「非期望状态码」错误。
 pub fn WebdavError::api(
-  status~ : Int,
+  status~ : Int32,
   operation~ : String,
   message~ : String,
 ) -> WebdavError {

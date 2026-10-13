@@ -13,7 +13,7 @@ pub(all) struct ParsedResource {
   props : Array[ParsedProp]
   /// `response` 级 `<D:status>`：批量操作（COPY / MOVE / DELETE）的 207
   /// 用它逐资源给出结果；PROPFIND 风格响应没有该元素时为 `None`
-  status : Int?
+  status : Int32?
   /// `response` 级 `<D:responsedescription>` 文本
   responsedescription : String?
 }
@@ -26,7 +26,7 @@ pub(all) struct ParsedProp {
   value : String
   /// 所在 `propstat` 的状态码：404 表示服务端没有这个属性，
   /// 用于把「属性不存在」与「属性值为空」区分开；缺 `<D:status>` 行时按 200
-  status : Int
+  status : Int32
 }
 
 ///|
@@ -36,11 +36,11 @@ pub(all) struct ParsedProp {
 priv struct ResBuilder {
   mut href : String
   mut is_dir : Bool
-  mut status : Int?
+  mut status : Int32?
   mut responsedescription : String?
   props : Array[ParsedProp]
   mut pending_props : Array[ParsedProp]
-  mut propstat_status : Int
+  mut propstat_status : Int32
 }
 
 ///|
@@ -58,7 +58,7 @@ fn ResBuilder::new() -> ResBuilder {
 
 ///|
 /// 从 `<D:status>` 文本（如 `HTTP/1.1 404 Not Found`）里取首个三位数字状态码。
-fn parse_http_status(text : String) -> Int? {
+fn parse_http_status(text : String) -> Int32? {
   let mut run = 0
   let mut value = 0
   for ch in text {
@@ -79,7 +79,7 @@ fn parse_http_status(text : String) -> Int? {
 
 ///|
 /// 2xx 视为该属性读到了值。
-fn is_success_status(status : Int) -> Bool {
+fn is_success_status(status : Int32) -> Bool {
   status >= 200 && status < 300
 }
 

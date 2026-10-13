@@ -6,7 +6,7 @@
 
 ///|
 /// unreserved = ALPHA / DIGIT / `-` / `.` / `_` / `~`（RFC 3986 §2.3）。
-fn is_unreserved(byte : Int) -> Bool {
+fn is_unreserved(byte : Int32) -> Bool {
   (byte >= 0x41 && byte <= 0x5A) ||
   (byte >= 0x61 && byte <= 0x7A) ||
   (byte >= 0x30 && byte <= 0x39) ||
@@ -18,7 +18,7 @@ fn is_unreserved(byte : Int) -> Bool {
 
 ///|
 /// `0 ~ 15` 的十六进制字符；调用方保证值域，故直接取 ASCII 码。
-fn hex_char(value : Int) -> Char {
+fn hex_char(value : Int32) -> Char {
   if value < 10 {
     (0x30 + value).unsafe_to_char()
   } else {
@@ -28,7 +28,7 @@ fn hex_char(value : Int) -> Char {
 
 ///|
 /// 单个十六进制字节的数值；非十六进制返回 `None`。
-fn hex_value(code : Byte) -> Int? {
+fn hex_value(code : Byte) -> Int32? {
   let c = code.to_int()
   if c >= 0x30 && c <= 0x39 {
     Some(c - 0x30)
@@ -44,7 +44,7 @@ fn hex_value(code : Byte) -> Int? {
 ///|
 /// 解析纯 ASCII 数字文本（如 Content-Length、getcontentlength）。
 /// 空串、含非数字字符时返回 `None`。
-pub fn parse_ascii_int(text : String) -> Int? {
+pub fn parse_ascii_int(text : String) -> Int32? {
   if text == "" {
     None
   } else {

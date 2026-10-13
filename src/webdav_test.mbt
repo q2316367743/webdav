@@ -3,7 +3,7 @@
 
 ///|
 fn mock_response(
-  status : Int,
+  status : Int32,
   content_type : String,
   body : String,
 ) -> @transport.RawResponse {

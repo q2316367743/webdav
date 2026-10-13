@@ -94,8 +94,8 @@ async fn WebdavClient::exists_by_propfind(
 /// 解析 `DAV` 响应头（形如 `1, 2` 或 `1,2` 或 `1, 2, extended-mkcol`）
 /// 里的合规等级数字，非数字 token 忽略。
 /// 没有该头时按 RFC 4918 §10.1 视为 Class 1。
-fn parse_dav_class(header : String?) -> Array[Int] {
-  let levels : Array[Int] = []
+fn parse_dav_class(header : String?) -> Array[Int32] {
+  let levels : Array[Int32] = []
   match header {
     Some(text) =>
       for segment in text.split(",") {

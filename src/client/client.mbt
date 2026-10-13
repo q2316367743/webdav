@@ -95,7 +95,7 @@ async fn WebdavClient::send(
   body? : String,
   conditions? : @types.Conditions,
   signal? : @moonhttp.AbortSignal,
-  ok~ : Array[Int],
+  ok~ : Array[Int32],
 ) -> @moonhttp.Response raise @types.WebdavError {
   let url = self.url_for(path)
   let cfg = build_config(url, http_method, headers, body, conditions, operation)

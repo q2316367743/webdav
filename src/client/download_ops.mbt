@@ -52,7 +52,7 @@ pub async fn WebdavClient::download_file(
   self : WebdavClient,
   path~ : String,
   on_chunk~ : (Bytes) -> Unit,
-  chunk_size? : Int,
+  chunk_size? : Int32,
   conditions? : @types.Conditions,
   on_progress? : (@types.Progress) -> Unit,
   signal? : @moonhttp.AbortSignal,
@@ -107,7 +107,7 @@ pub async fn WebdavClient::download_to_path(
   self : WebdavClient,
   path~ : String,
   local_path~ : String,
-  chunk_size? : Int,
+  chunk_size? : Int32,
   conditions? : @types.Conditions,
   on_progress? : (@types.Progress) -> Unit,
   signal? : @moonhttp.AbortSignal,
@@ -191,7 +191,7 @@ async fn WebdavClient::open_get_stream(
 
 ///|
 /// 流式下载的分块大小：`None` / 非正数一律取默认 64 KiB。
-fn download_chunk_size(chunk_size : Int?) -> Int {
+fn download_chunk_size(chunk_size : Int32?) -> Int32 {
   match chunk_size {
     Some(value) if value > 0 => value
     _ => 64 * 1024
@@ -200,7 +200,7 @@ fn download_chunk_size(chunk_size : Int?) -> Int {
 
 ///|
 /// 从响应头取 Content-Length（缺失或非数字时为 `None`）。
-fn read_content_length(headers : @moonhttp.Headers) -> Int? {
+fn read_content_length(headers : @moonhttp.Headers) -> Int32? {
   match headers.get("Content-Length") {
     Some(text) => @types.parse_ascii_int(text)
     None => None

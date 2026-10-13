@@ -120,7 +120,7 @@ pub fn Conditions::with_lock_token(
 pub(all) struct ServerCapabilities {
   /// `DAV` 头解析出的合规等级（1 / 2 / 3）；
   /// 没有该头时按 RFC 4918 §10.1 视为 `[1]`
-  dav_class : Array[Int]
+  dav_class : Array[Int32]
   /// `Allow` 头解析出的方法名（ASCII 大写，保持服务端给出的顺序）
   allow : Array[String]
   /// `Server` 头原文
@@ -154,7 +154,7 @@ pub fn ServerCapabilities::has_lock(self : ServerCapabilities) -> Bool {
 pub(all) struct PropResult {
   name : String
   value : String
-  status : Int
+  status : Int32
 }
 
 ///|
@@ -163,7 +163,7 @@ pub(all) struct ResourceFailure {
   /// 服务端返回的原始 href
   href : String
   /// 该资源的 HTTP 状态码
-  status : Int
+  status : Int32
   /// 状态码的中文注解
   message : String
 }

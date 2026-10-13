@@ -5,7 +5,7 @@
 ///|
 /// 造一份 WebDAV 风格的原始响应。
 fn dav_response(
-  status : Int,
+  status : Int32,
   content_type : String,
   body : String,
 ) -> @transport.RawResponse {
@@ -21,7 +21,7 @@ fn dav_response(
 ///|
 /// 在 `dav_response` 基础上追加响应头（DAV / Allow / Server / ETag 等）。
 fn dav_response_with(
-  status : Int,
+  status : Int32,
   content_type : String,
   body : String,
   extra : Array[(String, String)],

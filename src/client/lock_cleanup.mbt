@@ -12,7 +12,7 @@
 /// HEAD 探测结果：资源是否还在、长度（`None` = 未知，按非空处理）、ETag。
 priv struct NullProbe {
   missing : Bool
-  length : Int?
+  length : Int32?
   etag : String?
 }
 

@@ -46,8 +46,8 @@ async test "get_file 条件请求写 If-Match 头" {
 async test "download_file 分块消费并累计进度" {
   // 10 字节，chunk_size=4 → 4/4/2 三块，进度 4/8/10
   let (client, _) = dav_client(dav_response(200, "text/plain", "0123456789"))
-  let chunks : Array[Int] = []
-  let progresses : Array[Int] = []
+  let chunks : Array[Int32] = []
+  let progresses : Array[Int32] = []
   client.download_file(
     path="/big.bin",
     on_chunk=fn(chunk : Bytes) { chunks.push(chunk.length()) },
@@ -75,7 +75,7 @@ async test "download_to_path 分块写入本地文件并累计进度" {
   let (client, _) = dav_client(dav_response(200, "text/plain", "0123456789"))
   let dir = @fs.tmpdir(prefix="webdav-get-")
   let local_path = dir + "/out.bin"
-  let progresses : Array[Int] = []
+  let progresses : Array[Int32] = []
   client.download_to_path(path="/big.bin", local_path~, chunk_size=4, on_progress=fn(
     progress : @types.Progress,
   ) {

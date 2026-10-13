@@ -17,7 +17,7 @@ priv struct KnownLock {
 /// 注册表容量上限：超出后淘汰最旧的一条。
 /// 取值只为兜住长期运行的客户端内存，不承担正确性职责
 /// （被淘汰的锁只是失去自动重试能力，显式传 `lock_token` 仍然可用）。
-const MAX_KNOWN_LOCKS : Int = 256
+const MAX_KNOWN_LOCKS : Int32 = 256
 
 ///|
 /// 规范化路径用于覆盖判定：压掉重复与结尾的 `/`，统一成单个前导 `/`
