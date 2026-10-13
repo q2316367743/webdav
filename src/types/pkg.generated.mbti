@@ -39,7 +39,7 @@ pub impl Show for WebdavError
 // Types and methods
 pub(all) struct ActiveLock {
   token : String
-  scope : String
+  scope : LockScope
   depth : String?
   owner : String?
   timeout : String?
@@ -50,8 +50,10 @@ pub(all) struct Conditions {
   if_match : String?
   if_none_match : String?
   lock_token : String?
+  if_lists : Array[IfList]
 }
-pub fn Conditions::new(if_match? : String, if_none_match? : String, lock_token? : String) -> Self
+pub fn Conditions::new(if_match? : String, if_none_match? : String, lock_token? : String, if_lists? : Array[IfList]) -> Self
+pub fn Conditions::with_lock_token(Self, String) -> Self
 
 pub(all) enum Depth {
   Zero
@@ -80,11 +82,37 @@ pub(all) struct GetResult {
   last_modified : String?
 }
 
+pub(all) struct IfCondition {
+  kind : IfConditionKind
+  value : String
+  negated : Bool
+}
+pub fn IfCondition::etag(String, negated? : Bool) -> Self
+pub fn IfCondition::token(String, negated? : Bool) -> Self
+
+pub(all) enum IfConditionKind {
+  StateToken
+  EntityTag
+}
+
+pub(all) struct IfList {
+  resource_tag : String?
+  conditions : Array[IfCondition]
+}
+pub fn IfList::new(Array[IfCondition], resource_tag? : String) -> Self
+
 pub(all) struct LockResult {
   status : Int
   created : Bool
   lock : ActiveLock
 }
+
+pub(all) enum LockScope {
+  Exclusive
+  Shared
+}
+pub fn LockScope::from_dav(String) -> Self
+pub fn LockScope::to_dav(Self) -> String
 
 pub(all) struct Progress {
   loaded : Int
@@ -125,6 +153,7 @@ pub(all) struct WebdavConfig {
   username : String?
   password : String?
   timeout_ms : Int?
+  retry_on_423 : Bool?
 } derive(Default)
 pub fn WebdavConfig::default() -> Self
 

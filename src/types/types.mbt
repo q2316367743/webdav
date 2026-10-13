@@ -7,12 +7,16 @@
 /// - `base_url`：服务器根地址，如 `"http://127.0.0.1:8080/dav/"`，
 ///   末尾多余的 `/` 会被内部规范化容忍；
 /// - `username` / `password`：Basic Auth 凭据，均为 `None` 时不携带认证；
-/// - `timeout_ms`：单请求超时毫秒数，`None` 时取 `DEFAULT_TIMEOUT_MS`。
+/// - `timeout_ms`：单请求超时毫秒数，`None` 时取 `DEFAULT_TIMEOUT_MS`；
+/// - `retry_on_423`：写请求被 423（资源被锁定）拒绝、且本客户端自己持有一把
+///   覆盖该路径的锁时，是否用这把锁的令牌自动重试一次；`None` / `false`
+///   时保持「不自动重试」的默认行为。
 pub(all) struct WebdavConfig {
   base_url : String
   username : String?
   password : String?
   timeout_ms : Int?
+  retry_on_423 : Bool?
 } derive(Default)
 
 ///|

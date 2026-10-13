@@ -66,6 +66,7 @@ async test "门面完整操作流：建目录 → 上传 → 列目录 → 下�
       username: Some("user"),
       password: Some("pass"),
       timeout_ms: None,
+      retry_on_423: None,
     },
     transport,
   )
@@ -127,6 +128,7 @@ async test "门面可直接做流式上传与下载到本地路径" {
       username: None,
       password: None,
       timeout_ms: None,
+      retry_on_423: None,
     },
     transport,
   )

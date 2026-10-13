@@ -13,8 +13,9 @@
 priv struct BytesReader {
   data : Bytes
   mut pos : Int
-  // read_some 复用这块内部缓冲做中转，须与实例同生命周期
-  buf : @io.ReaderBuffer
+  // read_some 复用这块内部缓冲做中转，须与实例同生命周期；
+  // 重放（423 自动重试）时整块换成新缓冲，避免上一轮残留字节
+  mut buf : @io.ReaderBuffer
 }
 
 ///|
@@ -53,6 +54,10 @@ impl @io.Reader for BytesReader with fn _direct_read(
 ///   如 `If-None-Match: "*"` 表示「仅当资源不存在时才创建」）；
 /// - `on_progress`：上传进度，按传输层 64 KiB 分块节奏触发，
 ///   `total` 为声明的请求体长度。
+///
+/// 内容整份在内存，因此这条路径**可重放**：写请求被 423 拒绝、且客户端
+/// 开启 `retry_on_423` 并持有覆盖锁时，会自动补锁令牌重试一次
+/// （`put_file_stream` / `put_file_from_path` 的一次性流不重试）。
 pub async fn WebdavClient::put_file(
   self : WebdavClient,
   path~ : String,
@@ -63,6 +68,11 @@ pub async fn WebdavClient::put_file(
   signal? : @moonhttp.AbortSignal,
 ) -> @types.PutResult raise @types.WebdavError {
   let reader = BytesReader::{ data, pos: 0, buf: @io.ReaderBuffer::new(), }
+  let reset = fn() {
+    reader.pos = 0
+    reader.buf = @io.ReaderBuffer::new()
+  }
+  let rewind : (() -> Unit)? = Some(reset)
   self.send_put(
     path~,
     reader~,
@@ -70,6 +80,7 @@ pub async fn WebdavClient::put_file(
     content_type?,
     conditions?,
     on_progress?,
+    rewind?,
     signal?,
   )
 }
@@ -88,6 +99,8 @@ pub async fn WebdavClient::put_file(
 ///
 /// **流是一次性资源**：同一条流不要发两次请求；遇到 307/308 这类要求
 /// 原样重放请求体的重定向时，moonhttp 会直接报错而不是静默发空体。
+/// 同理，这条路径**不参与 423 自动重试**（拨不回起点），
+/// 需要重试能力请在内存里用 `put_file`。
 pub async fn WebdavClient::put_file_stream(
   self : WebdavClient,
   path~ : String,
@@ -154,6 +167,9 @@ pub async fn WebdavClient::put_file_from_path(
 ///|
 /// PUT 管线的公共实现：三种上传形态只差「数据从哪来」——请求头、
 /// 条件请求、进度接线与状态码判定完全一致，不重复三份。
+///
+/// `rewind` 是「数据源可重放」的标志：给了才允许 423 自动重试
+/// （重试前先调它把数据源拨回起点），一次性流不给。
 async fn WebdavClient::send_put(
   self : WebdavClient,
   path~ : String,
@@ -162,22 +178,35 @@ async fn WebdavClient::send_put(
   content_type? : String,
   conditions? : @types.Conditions,
   on_progress? : (@types.Progress) -> Unit,
+  rewind? : () -> Unit,
   signal? : @moonhttp.AbortSignal,
 ) -> @types.PutResult raise @types.WebdavError {
-  let mut cfg = @config.Config::new(self.url_for(path))
-    .with_method(@config.Method::Put)
-    .with_data_from_stream(reader, content_length?)
-  match content_type {
-    Some(mime) => cfg = cfg.with_header("Content-Type", mime)
-    None => ()
-  }
-  cfg = apply_conditions(cfg, conditions)
-  match adapt_progress(on_progress) {
-    Some(report) => cfg = cfg.with_on_upload_progress(report)
-    None => ()
-  }
-  let response = self.http.request(cfg, signal?) catch {
-    error => raise map_http_error(error, signal_reason(signal))
+  let url = self.url_for(path)
+  let cfg = build_put_config(
+    url, reader, content_length, content_type, conditions, on_progress,
+  )
+  let mut response = self.perform(cfg, signal?)
+  match (response.status == 423, self.retry_on_423, rewind) {
+    (true, true, Some(reset)) =>
+      match self.covering_lock_token(path) {
+        Some(token) => {
+          reset()
+          let retry_conditions = conditions
+            .unwrap_or(@types.Conditions::new())
+            .with_lock_token(token)
+          let retry_cfg = build_put_config(
+            url,
+            reader,
+            content_length,
+            content_type,
+            Some(retry_conditions),
+            on_progress,
+          )
+          response = self.perform(retry_cfg, signal?)
+        }
+        None => ()
+      }
+    _ => ()
   }
   let checked = check_status(response, operation="PUT", ok=[200, 201, 204])
   {
@@ -187,6 +216,31 @@ async fn WebdavClient::send_put(
     last_modified: checked.headers.get("Last-Modified"),
     location: checked.headers.get("Location"),
   }
+}
+
+///|
+/// 组装 PUT 请求配置（流式体 / Content-Type / 进度 / 条件头），
+/// 供 423 自动重试时原样重建。
+fn build_put_config(
+  url : String,
+  reader : &@io.Reader,
+  content_length : Int?,
+  content_type : String?,
+  conditions : @types.Conditions?,
+  on_progress : ((@types.Progress) -> Unit)?,
+) -> @config.Config raise @types.WebdavError {
+  let mut cfg = @config.Config::new(url)
+    .with_method(@config.Method::Put)
+    .with_data_from_stream(reader, content_length?)
+  match content_type {
+    Some(mime) => cfg = cfg.with_header("Content-Type", mime)
+    None => ()
+  }
+  match adapt_progress(on_progress) {
+    Some(report) => cfg = cfg.with_on_upload_progress(report)
+    None => ()
+  }
+  apply_conditions(cfg, conditions, operation="PUT", url~)
 }
 
 ///|

@@ -35,7 +35,7 @@ async test "lock 发独占写锁体并解析 Lock-Token 响应头" {
   assert_eq(result.status, 200)
   assert_false(result.created)
   assert_eq(result.lock.token, "1791426373")
-  assert_eq(result.lock.scope, "exclusive")
+  assert_true(result.lock.scope is @types.LockScope::Exclusive)
 }
 
 ///|

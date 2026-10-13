@@ -23,23 +23,26 @@
 配套新增错误分支 `WebdavError::Io`（本地文件打不开 / 创建失败 / 写盘失败），
 细节见 `docs/02-api.md` 的「本地文件形态」与 `docs/01-architecture.md` 的第 3 / 4 节。
 
-## 锁支持（已实现）
+## 锁支持（已实现，0.2.0 补齐 P1 扩展）
 
-RFC 4918 §9.10 / §9.11 的独占写锁闭环：
+RFC 4918 §9.10 / §9.11 的写锁闭环，0.2.0 起含共享锁与完整的 `If`：
 
 | 能力 | 入口 | 说明 |
 |------|------|------|
-| 加锁 | `lock(path~, owner?, timeout?, depth?) -> LockResult` | 发 lockinfo（独占写锁）；`Depth::One` 本地 400，201 → `created` |
+| 加锁 | `lock(path~, owner?, timeout?, depth?, scope?) -> LockResult` | 发 lockinfo；`scope` 省略 = 独占，可传 `LockScope::Shared`；`Depth::One` 本地 400，201 → `created`（lock-null） |
 | 刷新 | `refresh_lock(path~, token~, timeout?) -> LockResult` | 无请求体的 LOCK + `If`，只续期不换令牌 |
 | 解锁 | `unlock(path~, token~)` | 发 `Lock-Token: <令牌>` |
-| 锁发现 | `get_locks(path~) -> Array[ActiveLock]` | PROPFIND `Depth:0` 读 `lockdiscovery` |
-| 令牌透传 | `Conditions::new(lock_token=…)` | 所有写操作自动补 `If: (<令牌>)`，423 → `Api` |
+| 锁发现 | `get_locks(path~) -> Array[ActiveLock]` | PROPFIND `Depth:0` 读 `lockdiscovery`，`scope` 为 `LockScope` |
+| 令牌 / 条件透传 | `Conditions::new(lock_token=…, if_lists=…)` | 所有写操作自动补 `If`；`IfList` / `IfCondition` 支持多令牌析取、`Not`、`[etag]`、带标签列表 |
+| lock-null 清理 | `cleanup_lock_null(path~, token~) -> Bool` | 先 UNLOCK，HEAD 确认 `Content-Length: 0` 才带 `If-Match` DELETE |
+| 423 自动补令牌 | `WebdavConfig::retry_on_423` | 默认关；开启后查进程内注册表（同路径 / infinity 祖先），命中则补 `If` 重试一次 |
 
-令牌在客户端统一归一（trim + 剥一层 `<>`，`tok` / `<tok>` 等价）；只做独占写锁，
-不做共享锁、带标签 `If`、lock-null 创建清理与 423 自动重试。细节见
-`docs/02-api.md` 的「锁」与 `docs/01-architecture.md` 第 8 节；
-`src/main/testdata/verify_lock.py` 给 Python 兜底服务器补上锁处理器，
-让加锁 → 无令牌写入 423 → 带令牌写入 → 刷新 → 锁发现 → 解锁在真实链路可跑。
+令牌在客户端统一归一（trim + 剥一层 `<>`，`tok` / `<tok>` 等价）。
+`Depth: 1` 的 LOCK 按 RFC 4918 §9.10.3 仍本地拦 400；不做 5xx / 断线退避重试，
+锁注册表不跨进程。细节见 `docs/05-lock-extensions.md`、`docs/02-api.md` 的「锁」与
+`docs/01-architecture.md` 第 8 节；`src/main/testdata/verify_lock.py` + `verify_if.py`
+给 Python 兜底服务器补上锁表与 `If` 解析，让独占 / 共享锁、带标签 `If`、lock-null
+与 423 重试在真实链路可跑（hacdias 不支持的部分按预期软跳过）。
 
 ## P0：协议正确性（已实现）
 
@@ -78,9 +81,10 @@ RFC 4918 §9.10 / §9.11 的独占写锁闭环：
    （`<D:remove>`），并让 `PropResult` 带上命名空间以免同名属性撞车。
 6. **取消语义细化**：区分「用户取消」与「超时取消」（moonhttp 的
    `AbortSignal::reason()` 已能携带原因，`Cancelled(reason)` 已预留位置）。
-7. **锁能力扩展**：共享锁（`shared`）、带标签 `If`（`</url> (<令牌>)`）、
-   `Not` / ETag 形态 `If`、多令牌列表、lock-null 的创建清理、按 423 自动重试，
-   以及 `Depth: 1` 的 LOCK。
+7. **锁能力扩展（0.2.0 已实现）**：共享锁（`shared`）、带标签 `If`（`</url> (<令牌>)`）、
+   `Not` / ETag 形态 `If`、多令牌列表、lock-null 的创建清理、按 423 自动重试
+   （`retry_on_423`，默认关）；`Depth: 1` 的 LOCK 按 RFC 4918 §9.10.3 **裁定不做**
+   （本地仍回 400）。实现记录见 `docs/05-lock-extensions.md`。
 
 ## P2：更远的方向（按需）
 
@@ -91,7 +95,8 @@ RFC 4918 §9.10 / §9.11 的独占写锁闭环：
   内存与响应体同阶；可改为 `Client::stream` + 增量 XML 解析。
 - **并发与连接复用**：目前一次一个请求；批量操作（并行 `stat`、并发上传）需要
   连接池策略与限流。
-- **重试与退避**：对 423（锁定）、5xx、连接重置的自动重试策略。
+- **重试与退避**：对 5xx、连接重置的自动重试与退避策略（423 的「补令牌重试一次」
+  已由 `WebdavConfig::retry_on_423` 落地，见 `docs/05-lock-extensions.md`）。
 - **push 型上传（Writer 数据源）**：本轮只收读取流（pull）。「边生成边推」可用官方
   `@io.MemoryReader` 桥（回调里往 `&Writer` 写）或 `@io.pipe()` + 生产者协程，
   暂不引入第二个 API。

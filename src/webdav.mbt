@@ -11,6 +11,9 @@ pub using @types {
   type WebdavErrorDetail,
   type Depth,
   type Conditions,
+  type IfList,
+  type IfCondition,
+  type IfConditionKind,
   type ServerCapabilities,
   type PropResult,
   type ResourceFailure,
@@ -18,6 +21,7 @@ pub using @types {
   type GetResult,
   type ActiveLock,
   type LockResult,
+  type LockScope,
 }
 
 ///|

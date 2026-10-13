@@ -4,14 +4,21 @@
 // 单独成文件以遵守单文件行数上限（AGENTS.md RL-04）。
 
 ///|
-/// 生成 LOCK 请求体（RFC 4918 §9.10.1 的 lockinfo）：独占写锁。
+/// 生成 LOCK 请求体（RFC 4918 §9.10.1 的 lockinfo）：独占或共享写锁。
 /// `owner` 作为 `<D:owner>` 的文本内容，省略时不发该元素；
+/// `scope` 省略时按独占（保持既有行为）；
 /// 文本里的 `&` / `<` 由 Writer 负责转义。
-pub fn lockinfo_body(owner? : String) -> String raise @xml.WriterError {
+pub fn lockinfo_body(
+  owner? : String,
+  scope? : @types.LockScope,
+) -> String raise @xml.WriterError {
   let writer = @xml.Writer::new()
   writer.start_element("D:lockinfo", [("xmlns:D", "DAV:")])
   writer.start_element("D:lockscope", [])
-  writer.empty_element("D:exclusive", [])
+  match scope {
+    Some(@types.LockScope::Shared) => writer.empty_element("D:shared", [])
+    _ => writer.empty_element("D:exclusive", [])
+  }
   writer.end_element("D:lockscope")
   writer.start_element("D:locktype", [])
   writer.empty_element("D:write", [])
@@ -30,12 +37,12 @@ pub fn lockinfo_body(owner? : String) -> String raise @xml.WriterError {
 
 ///|
 /// 单个 `activelock` 解析过程中的累积器。
-/// `scope` 预先按独占处理（RFC 4918 §14.11 里 lockscope 必填，
-/// 但服务端漏回时按独占更符合客户端预期）；`owner` 用缓冲是因为
+/// `scope` 为 `None` 表示服务端没回 `lockscope`（RFC 4918 §14.11 里它是必填，
+/// 但服务端漏回时由解析入口的 `default_scope` 回填）；`owner` 用缓冲是因为
 /// `<D:owner>` 里可以嵌 `<D:href>`，两段文本都要算进 owner。
 priv struct LockBuilder {
   mut token : String
-  mut scope : String
+  mut scope : @types.LockScope?
   mut depth : String?
   mut timeout : String?
   mut lockroot : String?
@@ -46,7 +53,7 @@ priv struct LockBuilder {
 fn LockBuilder::new() -> LockBuilder {
   {
     token: "",
-    scope: "exclusive",
+    scope: None,
     depth: None,
     timeout: None,
     lockroot: None,
@@ -66,10 +73,16 @@ fn is_lock_leaf(name : @xml.XmlName) -> Bool {
 /// 解析 lockdiscovery，返回文档里出现的全部 activelock。
 /// 同一解析器同时服务 LOCK 响应体与 PROPFIND 的 207 响应体，
 /// 因此不假定 activelock 的绝对嵌套深度。
-/// 没有锁令牌的 activelock 会被丢弃（无令牌的锁对调用方没有意义）。
+/// 没有锁令牌的 activelock 会被丢弃（无令牌的锁对调用方没有意义）；
+/// 服务端没回 `lockscope` 时用 `default_scope` 回填（省略则按独占）。
 pub fn parse_lockdiscovery(
   xml_text : String,
+  default_scope? : @types.LockScope,
 ) -> Array[@types.ActiveLock] raise @xml.XmlError {
+  let fallback = match default_scope {
+    Some(scope) => scope
+    None => @types.LockScope::Exclusive
+  }
   let reader = @xml.NamespaceReader::from_string(xml_text)
   let locks : Array[@types.ActiveLock] = []
   // 打开元素的 local_name 栈，用于判断 href 的父元素
@@ -85,7 +98,7 @@ pub fn parse_lockdiscovery(
   }
   fn set_scope(value : String) -> Unit {
     match builder {
-      Some(b) => b.scope = value
+      Some(b) => b.scope = Some(@types.LockScope::from_dav(value))
       None => ()
     }
   }
@@ -106,7 +119,7 @@ pub fn parse_lockdiscovery(
         if b.token != "" {
           locks.push({
             token: b.token,
-            scope: b.scope,
+            scope: b.scope.unwrap_or(fallback),
             depth: b.depth,
             owner: match b.owner {
               Some(buf) => {

@@ -17,10 +17,13 @@ src/webdav.mbt + src/moon.pkg   根包（门面）：using 重导出 + 薄包装
         │        file_ops（上传三形态：put_file / put_file_stream / put_file_from_path）
         │        download_ops（get_file 全量 / download_file 回调 / download_to_path 写盘）
         │        lock_ops（LOCK / refresh_lock / UNLOCK / get_locks）
+        │        lock_parse（lockdiscovery 解析）· lock_cleanup（lock-null 清理）
+        │        lock_registry（已知锁注册表 / 423 覆盖判定）· if_header（If 头渲染）
         │        ├──> src/types/    公共类型（配置 / FileInfo / Progress / 错误 /
-        │        │                  protocol：Depth·Conditions·ServerCapabilities·
-        │        │                  PropResult·ResourceFailure / result：Put·Get /
-        │        │                  lock：ActiveLock·LockResult）
+        │        │                  protocol：Depth·Conditions·IfList·IfCondition·
+        │        │                  ServerCapabilities·PropResult·ResourceFailure /
+        │        │                  result：Put·Get /
+        │        │                  lock：ActiveLock·LockResult·LockScope）
         │        │                  + percent 编解码与 href 归一
         │        └──> src/xmlutil/  PROPFIND / PROPPATCH / lockinfo 请求体生成、
         │                  multistatus（207 解析）· lockinfo（lockdiscovery 解析）·
@@ -57,16 +60,17 @@ src/main/   演示程序（executable，.moonignore 已排除，不随包发布�
 | `set_properties` | PROPPATCH | Content-Type: xml | propertyupdate XML | 207 |
 | `move_path` | MOVE | Destination(绝对URL), Overwrite T/F, Depth | - | 201/204/207（同上） |
 | `copy_path` | COPY | 同上 | - | 201/204/207（同上） |
-| `lock` | LOCK | Content-Type: xml、Timeout(可选)、Depth(可选) | lockinfo XML（独占写锁） | 200/201（201 = 创建 lock-null） |
+| `lock` | LOCK | Content-Type: xml、Timeout(可选)、Depth(可选) | lockinfo XML（`scope` 省略 = 独占，可传共享） | 200/201（201 = 创建 lock-null） |
 | `refresh_lock` | LOCK | If: (\<令牌\>)、Timeout(可选) | - | 200 |
 | `unlock` | UNLOCK | Lock-Token: \<令牌\> | - | 200/204 |
 | `get_locks` | PROPFIND | Depth:0、Content-Type: xml | named-prop `lockdiscovery` | 207 |
+| `cleanup_lock_null` | UNLOCK → HEAD → DELETE | Lock-Token；DELETE 可带 If-Match | - | 200/204（HEAD 404 时直接返回 false） |
 
 条件头由 `Conditions` 统一生成（`apply_conditions`）：`if_match` / `if_none_match` 落
 `If-Match` / `If-None-Match`，`lock_token` 落 `If: (<令牌>)`（RFC 4918 §10.4.1 的
-Coded-URL 形态，尖括号必需）；取消信号经 `Client::request(cfg, signal?)`
-透传（`send` 的可选 `signal?` 参数）。Basic Auth 由 moonhttp `with_auth` 自动携带
-（`Authorization: Basic ...`）。
+Coded-URL 形态，尖括号必需），`if_lists` 落完整的 `If` 列表语法（可带资源标签）；
+取消信号经 `Client::request(cfg, signal?)` 透传（`send` 的可选 `signal?` 参数）。
+Basic Auth 由 moonhttp `with_auth` 自动携带（`Authorization: Basic ...`）。
 
 ## 关键实现决策
 
@@ -163,33 +167,53 @@ PROPFIND `Depth:0` allprop 再判定（404 → false，其余重抛）。这样�
 `HttpError::is_cancelled()` 把取消与网络错误分开，取消时取 `AbortSignal::reason()`
 填进 `Cancelled(reason?)`。
 
-### 8. 锁（src/client/lock_ops.mbt）
+### 8. 锁（`src/client/lock_ops.mbt` / `lock_parse.mbt` / `lock_cleanup.mbt` / `lock_registry.mbt` / `if_header.mbt`）
 
-- `lock` 发独占写锁的 `lockinfo` 体（`src/xmlutil/lockinfo.mbt` 生成），可带
-  `owner` / `Timeout` / `Depth`；`Depth::One` 在发请求前本地拒绝（RFC 只允许 0 与
-  infinity），`depth` 缺省不发头（服务端按 infinity 处理）。
+- `lock` 发 `lockinfo` 体（`src/xmlutil/lockinfo.mbt` 生成），`scope` 省略 = 独占，
+  传 `LockScope::Shared` 生成 `<D:shared/>`；可带 `owner` / `Timeout` / `Depth`；
+  `Depth::One` 在发请求前本地拒绝（RFC 4918 §9.10.3 只允许 0 与 infinity），
+  `depth` 缺省不发头（服务端按 infinity 处理）。201 = 服务端为未映射路径创建了
+  lock-null 资源，`LockResult.created` 标记。
 - 令牌来源：响应头 `Lock-Token` 优先，其次响应体首个 `activelock`；两者都无 →
   `Api(operation="LOCK", message="响应缺少锁令牌…")`。响应头自带尖括号，入库前经
   `normalize_lock_token` 归一（trim + 剥一层 `<>`），故 `tok` / `<tok>` 等价，
   拼回去不会出现 `<<tok>>`。响应体 XML 非法但有 `Lock-Token` 头时仍算成功
-  （元数据退化为 `scope="exclusive"`），没有头才抛 `Xml`。
+  （元数据退化为 `LockScope::Exclusive`），没有头才抛 `Xml`。
+- 作用域以服务端响应为准：响应体里的 `<D:lockscope>` 优先，缺省时用请求的作用域
+  回填（`parse_lockdiscovery(..., default_scope?)`，`refresh_lock` 不传 → 独占）。
 - `refresh_lock` = 无请求体的 LOCK + `If: (<令牌>)`（刷新不换令牌，`created` 恒 false）；
   `unlock` 发 `Lock-Token: <令牌>`；两者令牌归一后为空时本地抛 `Api(400)`。
+- `If` 头由 `if_header.mbt` 渲染：`if_lists`（列表内合取、列表间析取、`Not`、
+  `[etag]`、带标签列表）在前，`lock_token` 作为无标签列表追加在后；混用带标签与
+  无标签列表、空列表、空资源标签、空令牌都在发包前回 `Api(400)`。
+- `cleanup_lock_null` 收尾 §7.3 的空资源：先 `unlock`（404/409 视为锁已消失），
+  再 HEAD 确认 `Content-Length` 明确为 0，才带 `If-Match` DELETE；长度未知或非 0
+  返回 false，宁可不删也不误删。
+- 423 自动补令牌重试：`WebdavConfig::retry_on_423` 打开时，`send` 在 423 后查
+  `lock_registry` 的已知锁（同路径或 `depth == "infinity"` 的祖先），命中则复制
+  条件补 `If` **重试一次**；`MOVE` / `COPY` 的目标锁不在此范围，一次性流
+  （`put_file_stream` / `put_file_from_path`）不可重放也不参与。注册表最多 256 条，
+  是进程内缓存，不代表服务端真实状态。
 - `get_locks` 走 `send` 而非私有 `send_propfind`：`parse_multistatus` 会把嵌套的
   `lockdiscovery` 压成叶子文本，锁发现需要结构化解析，故复用 `parse_lockdiscovery`
   直接吃 207 响应体（请求体由 `propfind_named_body(["lockdiscovery"], ns_uri="DAV:")` 生成）。
-- 写操作带 `Conditions::new(lock_token=…)` 时自动补 `If`，PUT/DELETE/MOVE/COPY/
-  PROPPATCH/MKCOL 因此都获得锁令牌支持；服务端 423 → `Api`（`status_message` 已含
-  「资源被锁定」），412 → `Api`；本层不自动重试。
+- 写操作带 `Conditions::new(lock_token=…)` 或 `if_lists` 时自动补 `If`，PUT/DELETE/
+  MOVE/COPY/PROPPATCH/MKCOL 因此都获得锁令牌与条件支持；服务端 423 → `Api`
+  （`status_message` 已含「资源被锁定」），412 → `Api`；除显式开启的 423 重试外
+  本层不自动重试。扩展细节见 `docs/05-lock-extensions.md`。
 
 ## 测试策略
 
 - 白盒：`src/types/urlcodec_wbtest.mbt`（编解码、`href_to_path` 归一形态）、
   `src/xmlutil/xmlutil_wbtest.mbt`（请求体形状、前缀差异 / 中文 href / 自定义属性解析、
   propstat 200/404/403 逐段归属、response 级 status）、
-  `src/xmlutil/lockinfo_wbtest.mbt`（lockinfo 体形状与转义、lockdiscovery 解析：
-  裸数字 / `opaquelocktoken:` 令牌、owner 为空的取舍、前缀与命名空间差异、
-  非法 XML 抛错）。
+  `src/xmlutil/lockinfo_wbtest.mbt`（lockinfo 体形状与转义、共享锁请求体、
+  lockdiscovery 解析：裸数字 / `opaquelocktoken:` 令牌、`shared` / `exclusive`
+  作用域与缺省回填、owner 为空的取舍、前缀与命名空间差异、非法 XML 抛错）、
+  `src/types/lock_wbtest.mbt`（`LockScope` 互转、`IfCondition` / `IfList` 构造、
+  `Conditions::with_lock_token` 拷贝语义）、
+  `src/client/lock_registry_wbtest.mbt`（路径规范化、祖先判定、去重、响应 / 请求
+  Depth 优先级、256 条上限与后进先出）。
 - 黑盒：`src/client/*_test.mbt` 用 `MockTransport`（moonhttp/transport 公开）
   断言每个操作的请求形状（方法 / URL / 头 / body）与错误分支；`probe_ops_test`
   覆盖 OPTIONS 解析与 HEAD 回退，`transfer_ops_test` 覆盖 207 部分失败（`Partial`）、
@@ -199,12 +223,16 @@ PROPFIND `Depth:0` allprop 再判定（404 → false，其余重抛）。这样�
   （分块写盘、覆盖已有文件、404 不创建本地文件、父目录不存在 → `Io`）；
   `lock_ops_test` 覆盖 LOCK 请求形状与令牌来源优先级、刷新 / 解锁的头形态与
   空令牌本地拦截、锁发现请求体与解析、`If` 与 `If-Match` 共存、423 错误映射；
+  `if_header_test` 覆盖 `If` 渲染（多令牌 / `Not` / `[etag]` / 带标签 / 与
+  `lock_token` 组合）与四类本地 400（且断言零请求），`lock_scope_test` 覆盖共享锁
+  请求体与作用域回填优先级、`lock_retry_test` 覆盖 423 重试的命中 / 不命中 / 只重试
+  一次 / 可重放性，`lock_cleanup_test` 覆盖 HEAD 判定与 `If-Match` 删除；
   `src/webdav_test.mbt` 从 `@webdav` 门面走完整操作流（`from_responses` 按序供响应，
   含 OPTIONS、门面流式上传 + 下载到本地路径、门面重导出 / 取消信号用例）。
   坑：`MockTransport` 记录 `RequestBody::Stream` 引用但**不消费**，
   `MemoryReader` / `PipeRead` 的生产者协程会永久阻塞并在收尾时报 dead lock，
   故 mock 用例统一用 `temp_reader`（临时文件 + `@fs.File`）造 pull 型流。
-- 当前规模：`moon test --target native` 93 个用例全绿。
+- 当前规模：`moon test --target native` 139 个用例全绿。
 - 一键测试：`bash src/main/run_tests.sh`——自动起 WebDAV 服务端（优先
   brew 的 `webdav`，回退 `src/main/testdata/verify_server.py`）、跑
   `moon test` 全套测试、连真实服务端跑 `moon run src/main` 全流程
@@ -212,7 +240,9 @@ PROPFIND `Depth:0` allprop 再判定（404 → false，其余重抛）。这样�
   本地路径上传（64 KiB 分块进度）→ `download_to_path` 写盘 → 逐字节比对，
   以及 `put_file` 全量形态 + 中文文件名端到端编码），
   最后关闭服务端并汇总 PASS/FAIL。真实链路还会跑一遍锁流程（LOCK → 无令牌 PUT
-  被拒 423 → 带令牌 PUT → 刷新 → 锁发现 → UNLOCK，服务端未声明 Class 2 时跳过）。
+  被拒 423 → 带令牌 PUT → 刷新 → 锁发现 → UNLOCK，另加共享锁、带标签 `If`、
+  lock-null 清理与 423 自动补令牌重试；不支持的能力按中文说明软跳过，不计失败，
+  服务端未声明 Class 2 时整段跳过）。
   `src/main/testdata/` 即真实测试文件（样本文件 + 兜底服务端脚本）。
 
   兜底服务器 `verify_server.py` 刻意对齐协议细节：`Depth:1` 不递归、
@@ -221,9 +251,12 @@ PROPFIND `Depth:0` allprop 再判定（404 → false，其余重抛）。这样�
   返回 405，从而在真实链路上覆盖 `exists` 的 PROPFIND 回退分支。
   锁相关的处理器拆在 `verify_lock.py`（内存锁表 + `LockMixin`）：令牌带
   `opaquelocktoken:` 前缀（hacdias 用裸数字，两条路径互补）、`If` 里的令牌
-  必须带尖括号、无匹配令牌的写操作回 423、PROPFIND 能真的读回 `lockdiscovery`
-  （hacdias 只回空元素，故 demo 对该步做「读不到就跳过」处理）。它刻意不实现
-  LOCK 的 lock-null 创建（路径不存在直接 404），201 分支由 Mock 单测覆盖。
+  必须带尖括号、无匹配令牌的写操作回 423、同路径可有多把共享锁而独占锁与任何锁
+  互斥、LOCK 未映射路径时创建空文件并回 201（lock-null）、PROPFIND 能真的读回
+  `lockdiscovery`（hacdias 只回空元素，故 demo 对该步做「读不到就跳过」处理）。
+  `If` 的解析子集单独拆在 `verify_if.py`（带标签列表 / `Not` / `[etag]` / 资源标签
+  继承），由 `verify_lock.py` 导入；hacdias 对共享锁回 501、对带标签 `If` 回 412，
+  demo 按预期软跳过。
 
   手工起服务端（brew `webdav`，hacdias）时的注意：v5 的权限字母是
   C/R/U/D（Create/Read/Update/Delete），不是旧版的 R/W/D，写 RWD 会启动失败：
@@ -250,9 +283,12 @@ PROPFIND `Depth:0` allprop 再判定（404 → false，其余重抛）。这样�
   数据源是流或磁盘上的大文件 → `put_file_stream` / `put_file_from_path`；
   要落盘 → `download_to_path`（同步 `on_chunk` 回调里 await 不了 async 写盘）；
 - `mkdir` 是单级（409 = 父不存在），递归创建留待后续；
-- 锁只做**独占写锁**：不支持共享锁（`shared`）、带标签的 `If`（`</url> (<令牌>)`）、
-  `Not` / ETag 形态的 `If`、多令牌列表、lock-null 的创建与清理，也不在 423 时自动
-  重试；`has_lock()` 仍是纯能力探测（`DAV: 2` 或 `Allow: LOCK`）；
+- 锁支持**独占与共享写锁**、完整的 `If`（多令牌列表析取、列表内合取、`Not`、
+  `[etag]`、带标签列表 `</url> (<令牌>)`）、lock-null 清理（`cleanup_lock_null`）
+  与可选的 423 自动补令牌重试（`WebdavConfig::retry_on_423`，默认关）；
+  `Depth: 1` 的 LOCK 按 RFC 4918 §9.10.3 本地拦 400，5xx / 断线不做退避重试，
+  锁注册表只是进程内缓存；`has_lock()` 仍是纯能力探测（`DAV: 2` 或 `Allow: LOCK`），
+  细节见 `docs/05-lock-extensions.md`；
 - 本地文件系统错误走 `WebdavError::Io`（`to_string()` 为「本地文件错误: …」），
   与 HTTP 层错误分开；`WebdavErrorDetail` 因此从五类变六类（下游穷尽 match 需补分支）；
 - 扩展方法（REPORT / ACL 等）在 moonhttp 侧可直接经 `Method::Other(name)` 发送，

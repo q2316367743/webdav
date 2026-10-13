@@ -19,12 +19,43 @@ pub fn normalize_lock_token(token : String) -> String {
 }
 
 ///|
+/// 锁作用域（RFC 4918 §14.11 `lockscope`）：独占写锁或共享写锁。
+pub(all) enum LockScope {
+  /// 独占写锁：同一资源同时只有一把（当前默认）
+  Exclusive
+  /// 共享写锁：可以被多个主体同时持有（彼此之间不冲突）
+  Shared
+}
+
+///|
+/// 渲染为 `lockscope` 子元素名：`"exclusive"` / `"shared"`。
+pub fn LockScope::to_dav(self : LockScope) -> String {
+  match self {
+    Exclusive => "exclusive"
+    Shared => "shared"
+  }
+}
+
+///|
+/// 解析 `lockscope` 子元素名（去空白、大小写不敏感）：
+/// `"shared"` → `Shared`，其余（含空串与未知值）→ `Exclusive`，
+/// 与「服务端没给 lockscope 时按独占处理」的既有口径一致。
+pub fn LockScope::from_dav(name : String) -> LockScope {
+  if ascii_upper(name.trim().to_owned()) == "SHARED" {
+    Shared
+  } else {
+    Exclusive
+  }
+}
+
+///|
 /// 一条活动锁（RFC 4918 §14.11 `activelock`）。
 pub(all) struct ActiveLock {
   /// 归一化后的锁令牌（已去掉外层 `<>`）
   token : String
-  /// 锁作用域：`"exclusive"` / `"shared"`；服务端没给 lockscope 时按独占处理
-  scope : String
+  /// 锁作用域；服务端没给 `lockscope` 时由调用方回填期望作用域，
+  /// 最终兜底为 `Exclusive`
+  scope : LockScope
   /// 锁深度：`"0"` / `"infinity"`
   depth : String?
   /// `owner` 元素的文本内容（嵌套 href 的文本也算在内）；

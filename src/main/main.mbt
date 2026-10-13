@@ -11,6 +11,7 @@ async fn main {
     username: @env.get_env_var("WEBDAV_USER"),
     password: @env.get_env_var("WEBDAV_PASS"),
     timeout_ms: Some(10_000),
+    retry_on_423: None,
   })
   println("目标服务器: \{base_url}")
   // 进度打印节流：只在整数百分比变化时输出一行
@@ -145,69 +146,17 @@ async fn main {
       !client.exists(path="/demo/not-here.txt"),
       "EXISTS /demo/not-here.txt 为假",
     )
-    // 9. 锁：LOCK / 无令牌写回 423 / 带令牌写 / 刷新 / 锁发现 / UNLOCK。
+    // 9. 锁：LOCK / 无令牌写回 423 / 带令牌写 / 刷新 / 锁发现 / UNLOCK，
+    //    以及共享锁、带标签 If、lock-null 清理与 423 自动重试（见 lock_demo.mbt）。
     //    服务端未声明 Class 2（DAV: 2）或 LOCK 时跳过，不计失败。
     if caps.has_lock() {
-      let _ = client.put_file(
-        path="/demo/locked.txt",
-        data=@utf8.encode("锁前写入"),
-        content_type="text/plain; charset=utf-8",
-      )
-      let locked = client.lock(
-        path="/demo/locked.txt",
-        owner="demo@example.com",
-        timeout="Second-300",
-      )
-      check(
-        locked.lock.token != "",
-        "LOCK /demo/locked.txt（令牌 \{locked.lock.token}）",
-      )
-      let blocked = try {
-        let _ = client.put_file(
-          path="/demo/locked.txt",
-          data=@utf8.encode("无令牌写入"),
-          content_type="text/plain; charset=utf-8",
-        )
-        false
-      } catch {
-        error => {
-          println("  无令牌 PUT 被拒：\{error}")
-          error.to_string().contains("423")
-        }
+      for step in demo_lock(client, base_url) {
+        failures.push(step)
       }
-      check(blocked, "无锁令牌的 PUT 被拒（423）")
-      let token = locked.lock.token
-      let write = client.put_file(
-        path="/demo/locked.txt",
-        data=@utf8.encode("带令牌写入"),
-        content_type="text/plain; charset=utf-8",
-        conditions=@webdav.Conditions::new(lock_token=token),
-      )
-      println("✓ 带锁令牌 PUT（HTTP \{write.status}）")
-      let refreshed = client.refresh_lock(
-        path="/demo/locked.txt",
-        token~,
-        timeout="Second-600",
-      )
-      check(refreshed.status == 200, "刷新锁（Timeout → Second-600）")
-      let locks = client.get_locks(path="/demo/locked.txt")
-      if locks.is_empty() {
-        println(
-          "（服务端 PROPFIND 不回 lockdiscovery，跳过锁发现校验）",
-        )
-      } else {
-        check(
-          locks[0].token != "",
-          "PROPFIND lockdiscovery（\{locks.length()} 把锁）",
-        )
-      }
-      client.unlock(path="/demo/locked.txt", token~)
-      println("✓ UNLOCK /demo/locked.txt")
     } else {
       println("（服务端未声明 Class 2（DAV: 2），跳过锁校验）")
     }
     // 10. 清理
-    client.delete(path="/demo/locked.txt")
     client.delete(path="/demo/copy.txt")
     client.delete(path="/demo/renamed.txt")
     client.delete(path="/demo")

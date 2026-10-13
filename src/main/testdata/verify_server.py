@@ -13,9 +13,10 @@ DELETE/MOVE/COPY/PROPFIND/PROPPATCH/LOCK/UNLOCK，死属性与锁存内存
 - 环境变量 VERIFY_NO_HEAD_PREFIX 命中前缀的 HEAD 返回 405，
   用来验证客户端的 HEAD → PROPFIND Depth:0 回落。
 
-锁的刻意取舍：LOCK 只作用于已存在的资源（不实现 lock-null 创建，
-需要 201 的场景由 Mock 单测覆盖）；`If` 与 `Lock-Token` 里的令牌
-必须带尖括号，否则 400 / 412。
+锁的刻意取舍：支持独占锁与共享锁（同路径可有多把共享锁，独占锁与任何锁
+互斥），对不存在的路径加锁会创建空资源并回 201（RFC 4918 §7.3 的
+lock-null）；`If` 头按 verify_if.py 的解析子集求值（带标签列表、`Not`、
+`[etag]`），令牌与资源标签都必须带尖括号。
 
 用法：python3 verify_server.py [port] [root]
 默认：8083 /tmp/webdav-verify-root

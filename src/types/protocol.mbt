@@ -25,26 +25,94 @@ pub fn Depth::to_header(self : Depth) -> String {
 }
 
 ///|
+/// `If` 头里一条条件的作用对象（RFC 4918 §10.4.2）：
+/// 状态令牌（`<令牌>`，锁令牌属于此类）或 ETag（`[etag]`）。
+pub(all) enum IfConditionKind {
+  /// 状态令牌：`<opaquelocktoken:…>`，取值不含外层 `<>`
+  StateToken
+  /// 实体标签：`["abc"]`，取值是含引号的 ETag 原文
+  EntityTag
+}
+
+///|
+/// `If` 头里的一条条件，可带 `Not` 取反。
+pub(all) struct IfCondition {
+  /// 条件的作用对象种类
+  kind : IfConditionKind
+  /// 取值：状态令牌不含外层 `<>`；ETag 含引号（或 `*`），原样透传
+  value : String
+  /// 是否带 `Not` 前缀（RFC 4918 §10.4.3：只作用于紧随其后的那一条条件）
+  negated : Bool
+}
+
+///|
+/// 构造状态令牌条件；`value` 可带或不带外层 `<>`，渲染时统一只包一层，
+/// 归一化后为空串视为无效（渲染成空列表的请求会被本地拦下）。
+pub fn IfCondition::token(value : String, negated? : Bool) -> IfCondition {
+  { kind: StateToken, value, negated: negated.unwrap_or(false), }
+}
+
+///|
+/// 构造 ETag 条件；`value` 是含引号的 ETag 原文（如 `"\"abc\""`）。
+pub fn IfCondition::etag(value : String, negated? : Bool) -> IfCondition {
+  { kind: EntityTag, value, negated: negated.unwrap_or(false), }
+}
+
+///|
+/// `If` 头里的一个列表：`(<条件> …)`，可选带资源标签（`</url> (<条件>)`）。
+/// 同一列表内的条件是合取；多个列表之间是析取（RFC 4918 §10.4.3）。
+pub(all) struct IfList {
+  /// 资源标签（Simple-ref，不含外层 `<>`）；`None` = 无标签列表，作用于目标 URL
+  resource_tag : String?
+  /// 列表内的条件，至少要有一条
+  conditions : Array[IfCondition]
+}
+
+///|
+/// 按需构造 `If` 列表：`resource_tag` 省略时渲染成作用于目标 URL 的
+/// 无标签列表。
+pub fn IfList::new(
+  conditions : Array[IfCondition],
+  resource_tag? : String,
+) -> IfList {
+  { resource_tag, conditions, }
+}
+
+///|
 /// 条件请求：`If-Match` / `If-None-Match` / `If`，前者取值是服务端给出的
 /// ETag（含引号，原样透传）或通配符 `*`，用于乐观并发控制；
 /// `lock_token` 是要随请求提交的锁令牌，渲染成 `If: (<令牌>)`
-/// （RFC 4918 §10.4.1 的无标签列表形态）。
+/// （RFC 4918 §10.4.1 的无标签列表形态）；`if_lists` 是显式的 `If` 列表，
+/// 覆盖多令牌析取、`Not` / ETag 形态与带标签（`</url> (<令牌>)`）的条件。
 pub(all) struct Conditions {
   if_match : String?
   if_none_match : String?
   lock_token : String?
+  if_lists : Array[IfList]
 }
 
 ///|
 /// 按需构造条件：字段都可省略，省略即不发送对应请求头。
 /// `lock_token` 可带或不带外层 `<>`，由 `normalize_lock_token` 统一形状；
 /// 归一化后为空串时视为未设置（不会发出 `If: ()` 这种坏头）。
+/// `if_lists` 省略时不追加显式 `If` 列表。
 pub fn Conditions::new(
   if_match? : String,
   if_none_match? : String,
   lock_token? : String,
+  if_lists? : Array[IfList],
 ) -> Conditions {
-  { if_match, if_none_match, lock_token, }
+  { if_match, if_none_match, lock_token, if_lists: if_lists.unwrap_or([]), }
+}
+
+///|
+/// 换一个锁令牌（其余字段不变）：按 423 自动重试时用它把覆盖锁的令牌
+/// 补进 `If` 头。
+pub fn Conditions::with_lock_token(
+  self : Conditions,
+  token : String,
+) -> Conditions {
+  { ..self, lock_token: Some(token), }
 }
 
 ///|

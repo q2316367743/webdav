@@ -36,7 +36,15 @@ pub using @types {type FileInfo}
 
 pub using @types {type GetResult}
 
+pub using @types {type IfCondition}
+
+pub using @types {type IfConditionKind}
+
+pub using @types {type IfList}
+
 pub using @types {type LockResult}
+
+pub using @types {type LockScope}
 
 pub using @types {type Progress}
 

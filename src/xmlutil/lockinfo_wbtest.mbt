@@ -56,7 +56,7 @@ test "解析 hacdias 风格的 lockdiscovery（裸数字令牌）" {
   assert_eq(locks.length(), 1)
   let lock = locks[0]
   assert_eq(lock.token, "1791426373")
-  assert_eq(lock.scope, "exclusive")
+  assert_true(lock.scope is @types.LockScope::Exclusive)
   assert_eq(lock.depth, Some("infinity"))
   assert_eq(lock.timeout, Some("Second-3600"))
   assert_eq(lock.lockroot, Some("/a.txt"))
@@ -109,8 +109,34 @@ test "自闭合的 lockscope 也能定出作用域" {
     #|</D:activelock>
   let locks = parse_lockdiscovery(xml)
   assert_eq(locks.length(), 1)
-  assert_eq(locks[0].scope, "shared")
+  assert_true(locks[0].scope is @types.LockScope::Shared)
   assert_eq(locks[0].timeout, None)
+}
+
+///|
+test "lockinfo 请求体可以是共享写锁" {
+  let body = lockinfo_body(scope=@types.LockScope::Shared)
+  assert_true(body.contains("<D:lockscope><D:shared/></D:lockscope>"))
+  // 默认（不传 scope）仍是独占，保持既有行为
+  assert_true(
+    lockinfo_body().contains("<D:lockscope><D:exclusive/></D:lockscope>"),
+  )
+}
+
+///|
+test "服务端没回 lockscope 时按 default_scope 回填" {
+  let xml =
+    #|<D:activelock xmlns:D="DAV:">
+    #| <D:locktype><D:write/></D:locktype>
+    #| <D:locktoken><D:href>tok-no-scope</D:href></D:locktoken>
+    #|</D:activelock>
+  let fallback = parse_lockdiscovery(
+    xml,
+    default_scope=@types.LockScope::Shared,
+  )
+  assert_true(fallback[0].scope is @types.LockScope::Shared)
+  // 省略 default_scope 时兜底为独占
+  assert_true(parse_lockdiscovery(xml)[0].scope is @types.LockScope::Exclusive)
 }
 
 ///|

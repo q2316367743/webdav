@@ -11,21 +11,25 @@
 ///   省略则用服务端默认值；
 /// - `depth`：只支持 `Depth::Zero` 与 `Depth::Infinity`；`Depth::One`
 ///   对 LOCK 非法，发请求前抛 `Api` 400。省略时不发 `Depth` 头；
+/// - `scope`：锁作用域，省略时按独占写锁（`LockScope::Exclusive`）；
+///   共享锁传 `LockScope::Shared`，可与别的共享锁共存；
 /// - `signal`：取消信号。
 ///
 /// 返回服务端确认的锁：令牌优先取 `Lock-Token` 响应头，其次取响应体的
 /// 首个 `activelock`；两者都没有时抛 `Api`。响应体 XML 非法但带
-/// `Lock-Token` 头时仍算成功，元数据退化为默认值。
+/// `Lock-Token` 头时仍算成功，元数据退化为默认值。成功后这把锁会记进
+/// 客户端本地注册表，供写请求被 423 拒绝时自动补令牌重试。
 pub async fn WebdavClient::lock(
   self : WebdavClient,
   path~ : String,
   owner? : String,
   timeout? : String,
   depth? : @types.Depth,
+  scope? : @types.LockScope,
   signal? : @moonhttp.AbortSignal,
 ) -> @types.LockResult raise @types.WebdavError {
   check_lock_depth(depth)
-  let body = @xmlutil.lockinfo_body(owner?) catch {
+  let body = @xmlutil.lockinfo_body(owner?, scope?) catch {
     error => raise invalid_request_body(error, operation="LOCK")
   }
   let headers : Array[(String, String)] = [
@@ -48,11 +52,24 @@ pub async fn WebdavClient::lock(
     signal?,
     ok=[200, 201],
   )
-  {
+  let result : @types.LockResult = {
     status: response.status,
     created: response.status == 201,
-    lock: lock_from_response(response, fallback="", operation="LOCK"),
+    lock: lock_from_response(
+      response,
+      fallback="",
+      operation="LOCK",
+      default_scope=scope.unwrap_or(@types.LockScope::Exclusive),
+    ),
   }
+  // 记账：拿到锁之后，写请求被 423 拒绝才有令牌可自动补；
+  // 响应没回 depth 时用请求时声明的 Depth 兜底（祖先锁的覆盖范围靠它）
+  let declared_depth = match depth {
+    Some(value) => Some(value.to_header())
+    None => None
+  }
+  self.remember_lock(path, result.lock, declared_depth?)
+  result
 }
 
 ///|
@@ -83,17 +100,21 @@ pub async fn WebdavClient::refresh_lock(
     signal?,
     ok=[200],
   )
-  {
+  let result : @types.LockResult = {
     status: response.status,
     created: false,
     lock: lock_from_response(response, fallback=normalized, operation="LOCK"),
   }
+  // 刷新可能换新令牌（服务端有权这么做），按最新令牌重新记账
+  self.remember_lock(path, result.lock)
+  result
 }
 
 ///|
 /// 释放锁（UNLOCK，RFC 4918 §9.11）。`Lock-Token` 头按 `<令牌>` 形态发送。
 ///
 /// 200 / 204 表示已释放；409 通常表示令牌与资源上的锁不匹配。
+/// 释放成功后这把锁从本地注册表里去掉，之后写请求不会再自动带它。
 pub async fn WebdavClient::unlock(
   self : WebdavClient,
   path~ : String,
@@ -111,6 +132,7 @@ pub async fn WebdavClient::unlock(
       ok=[200, 204],
     ),
   )
+  self.forget_lock(path, normalized)
 }
 
 ///|
@@ -170,118 +192,4 @@ fn require_lock_token(
     )
   }
   normalized
-}
-
-///|
-/// 只有令牌、没有 lockdiscovery 元数据时的兜底锁条目。
-fn bare_lock(token : String, timeout : String?) -> @types.ActiveLock {
-  {
-    token,
-    scope: "exclusive",
-    depth: None,
-    owner: None,
-    timeout,
-    lockroot: None,
-  }
-}
-
-///|
-/// 用 `Timeout` 响应头补齐响应体缺失的锁超时。
-fn fill_timeout(
-  lock : @types.ActiveLock,
-  response : @moonhttp.Response,
-) -> @types.ActiveLock {
-  match lock.timeout {
-    Some(_) => lock
-    None =>
-      {
-        token: lock.token,
-        scope: lock.scope,
-        depth: lock.depth,
-        owner: lock.owner,
-        timeout: first_timeout_segment(response),
-        lockroot: lock.lockroot,
-      }
-  }
-}
-
-///|
-/// 取 `Timeout` 响应头的首段（形如 `Second-600, Infinite`）；
-/// 没有该头或首段为空时返回 `None`。
-fn first_timeout_segment(response : @moonhttp.Response) -> String? {
-  match response.headers.get("Timeout") {
-    Some(value) => {
-      let buf = StringBuilder()
-      for ch in value {
-        if ch == ',' {
-          break
-        }
-        buf.write_char(ch)
-      }
-      let segment = buf.to_string().trim().to_owned()
-      if segment == "" {
-        None
-      } else {
-        Some(segment)
-      }
-    }
-    None => None
-  }
-}
-
-///|
-/// 从 LOCK 响应里取锁：`Lock-Token` 头优先，其次响应体首个 `activelock`；
-/// 两者都没有时用 `fallback`（刷新锁用请求里的令牌），`fallback` 为空则抛错。
-fn lock_from_response(
-  response : @moonhttp.Response,
-  fallback~ : String,
-  operation~ : String,
-) -> @types.ActiveLock raise @types.WebdavError {
-  let mut xml_error : @xml.XmlError? = None
-  let locks = @xmlutil.parse_lockdiscovery(response.text()) catch {
-    error => {
-      xml_error = Some(error)
-      []
-    }
-  }
-  let header_token = match response.headers.get("Lock-Token") {
-    Some(value) => @types.normalize_lock_token(value)
-    None => ""
-  }
-  let from_body = if locks.length() > 0 { Some(locks[0]) } else { None }
-  match from_body {
-    Some(lock) => {
-      // 头与体不一致时以头为准（响应头是权威来源）
-      let merged : @types.ActiveLock = if header_token != "" &&
-        header_token != lock.token {
-        {
-          token: header_token,
-          scope: lock.scope,
-          depth: lock.depth,
-          owner: lock.owner,
-          timeout: lock.timeout,
-          lockroot: lock.lockroot,
-        }
-      } else {
-        lock
-      }
-      fill_timeout(merged, response)
-    }
-    None =>
-      if header_token != "" {
-        fill_timeout(bare_lock(header_token, None), response)
-      } else if fallback != "" {
-        fill_timeout(bare_lock(fallback, None), response)
-      } else {
-        match xml_error {
-          Some(error) => raise @types.WebdavError::xml(error)
-          None =>
-            raise @types.WebdavError::api(
-              status=response.status,
-              operation~,
-              message="响应缺少锁令牌（既无 Lock-Token 头也无 lockdiscovery）",
-            )
-        }
-      }
-  }
 }

@@ -21,6 +21,7 @@ pub fn create_webdav_client_with_transport(@types.WebdavConfig, &@transport.Tran
 pub struct WebdavClient {
   // private fields
 }
+pub async fn WebdavClient::cleanup_lock_null(Self, path~ : String, token~ : String, signal? : @abort.AbortSignal) -> Bool raise @types.WebdavError
 pub async fn WebdavClient::copy_path(Self, src~ : String, dst~ : String, overwrite? : Bool, depth? : @types.Depth, conditions? : @types.Conditions, signal? : @abort.AbortSignal) -> Unit raise @types.WebdavError
 pub async fn WebdavClient::delete(Self, path~ : String, conditions? : @types.Conditions, signal? : @abort.AbortSignal) -> Unit raise @types.WebdavError
 pub async fn WebdavClient::download_file(Self, path~ : String, on_chunk~ : (Bytes) -> Unit, chunk_size? : Int, conditions? : @types.Conditions, on_progress? : (@types.Progress) -> Unit, signal? : @abort.AbortSignal) -> Unit raise @types.WebdavError
@@ -32,7 +33,7 @@ pub async fn WebdavClient::get_properties(Self, path~ : String, names~ : Array[S
 pub async fn WebdavClient::get_properties_with_status(Self, path~ : String, names~ : Array[String], ns_uri? : String, conditions? : @types.Conditions, signal? : @abort.AbortSignal) -> Array[@types.PropResult] raise @types.WebdavError
 pub async fn WebdavClient::list(Self, path~ : String, depth? : @types.Depth, conditions? : @types.Conditions, signal? : @abort.AbortSignal) -> Array[@types.FileInfo] raise @types.WebdavError
 pub async fn WebdavClient::list_recursive(Self, path~ : String, conditions? : @types.Conditions, signal? : @abort.AbortSignal) -> Array[@types.FileInfo] raise @types.WebdavError
-pub async fn WebdavClient::lock(Self, path~ : String, owner? : String, timeout? : String, depth? : @types.Depth, signal? : @abort.AbortSignal) -> @types.LockResult raise @types.WebdavError
+pub async fn WebdavClient::lock(Self, path~ : String, owner? : String, timeout? : String, depth? : @types.Depth, scope? : @types.LockScope, signal? : @abort.AbortSignal) -> @types.LockResult raise @types.WebdavError
 pub async fn WebdavClient::mkdir(Self, path~ : String, conditions? : @types.Conditions, signal? : @abort.AbortSignal) -> Unit raise @types.WebdavError
 pub async fn WebdavClient::move_path(Self, src~ : String, dst~ : String, overwrite? : Bool, depth? : @types.Depth, conditions? : @types.Conditions, signal? : @abort.AbortSignal) -> Unit raise @types.WebdavError
 pub async fn WebdavClient::options(Self, path? : String, signal? : @abort.AbortSignal) -> @types.ServerCapabilities raise @types.WebdavError

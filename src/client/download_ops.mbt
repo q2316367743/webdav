@@ -16,17 +16,18 @@ pub async fn WebdavClient::get_file(
   on_progress? : (@types.Progress) -> Unit,
   signal? : @moonhttp.AbortSignal,
 ) -> @types.GetResult raise @types.WebdavError {
+  let url = self.url_for(path)
   let mut cfg = apply_conditions(
-    @config.Config::new(self.url_for(path)).with_method(@config.Method::Get),
+    @config.Config::new(url).with_method(@config.Method::Get),
     conditions,
+    operation="GET",
+    url~,
   )
   match adapt_progress(on_progress) {
     Some(report) => cfg = cfg.with_on_download_progress(report)
     None => ()
   }
-  let response = self.http.request(cfg, signal?) catch {
-    error => raise map_http_error(error, signal_reason(signal))
-  }
+  let response = self.perform(cfg, signal?)
   let checked = check_status(response, operation="GET", ok=[200])
   {
     content: checked.bytes(),
@@ -166,9 +167,12 @@ async fn WebdavClient::open_get_stream(
   conditions? : @types.Conditions,
   signal? : @moonhttp.AbortSignal,
 ) -> @moonhttp.StreamResponse raise @types.WebdavError {
+  let url = self.url_for(path)
   let cfg = apply_conditions(
-    @config.Config::new(self.url_for(path)).with_method(@config.Method::Get),
+    @config.Config::new(url).with_method(@config.Method::Get),
     conditions,
+    operation="GET",
+    url~,
   )
   let stream = self.http.stream(cfg, signal?) catch {
     error => raise map_http_error(error, signal_reason(signal))

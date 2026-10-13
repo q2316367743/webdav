@@ -7,9 +7,9 @@ import {
 }
 
 // Values
-pub fn lockinfo_body(owner? : String) -> String raise @xml.WriterError
+pub fn lockinfo_body(owner? : String, scope? : @types.LockScope) -> String raise @xml.WriterError
 
-pub fn parse_lockdiscovery(String) -> Array[@types.ActiveLock] raise @xml.XmlError
+pub fn parse_lockdiscovery(String, default_scope? : @types.LockScope) -> Array[@types.ActiveLock] raise @xml.XmlError
 
 pub fn parse_multistatus(String) -> Array[ParsedResource] raise @xml.XmlError
 

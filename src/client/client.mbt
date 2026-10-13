@@ -6,6 +6,10 @@
 pub struct WebdavClient {
   priv http : @moonhttp.Client
   priv base_url : String
+  /// 423 自动重试开关（来自 `WebdavConfig.retry_on_423`）
+  priv retry_on_423 : Bool
+  /// 本客户端加过的锁（进程内、有界），供 423 自动重试找覆盖锁的令牌
+  priv mut known_locks : Array[KnownLock]
 }
 
 ///|
@@ -67,6 +71,8 @@ pub fn create_webdav_client_with_transport(
   {
     http: @moonhttp.Client::new(config=defaults, transport~),
     base_url: normalize_base(config.base_url),
+    retry_on_423: config.retry_on_423.unwrap_or(false),
+    known_locks: [],
   }
 }
 
@@ -91,7 +97,43 @@ async fn WebdavClient::send(
   signal? : @moonhttp.AbortSignal,
   ok~ : Array[Int],
 ) -> @moonhttp.Response raise @types.WebdavError {
-  let mut cfg = @config.Config::new(self.url_for(path)).with_method(http_method)
+  let url = self.url_for(path)
+  let cfg = build_config(url, http_method, headers, body, conditions, operation)
+  let mut response = self.perform(cfg, signal?)
+  if response.status == 423 && self.retry_on_423 {
+    // 被锁挡住且本客户端自己持有覆盖锁：补上令牌重试一次。
+    match self.covering_lock_token(path) {
+      Some(token) => {
+        let retry_conditions = conditions
+          .unwrap_or(@types.Conditions::new())
+          .with_lock_token(token)
+        let retry_cfg = build_config(
+          url,
+          http_method,
+          headers,
+          body,
+          Some(retry_conditions),
+          operation,
+        )
+        response = self.perform(retry_cfg, signal?)
+      }
+      None => ()
+    }
+  }
+  check_status(response, operation~, ok~)
+}
+
+///|
+/// 组装一次请求的配置（方法 / 头 / 体 / 条件头），供 423 重试时原样重建。
+fn build_config(
+  url : String,
+  http_method : @config.Method,
+  headers : Array[(String, String)]?,
+  body : String?,
+  conditions : @types.Conditions?,
+  operation : String,
+) -> @config.Config raise @types.WebdavError {
+  let mut cfg = @config.Config::new(url).with_method(http_method)
   match headers {
     Some(pairs) =>
       for pair in pairs {
@@ -104,34 +146,32 @@ async fn WebdavClient::send(
     Some(xml) => cfg = cfg.with_data_from_str(xml)
     None => ()
   }
-  cfg = apply_conditions(cfg, conditions)
-  let response = self.http.request(cfg, signal?) catch {
+  apply_conditions(cfg, conditions, operation~, url~)
+}
+
+///|
+/// 发一次请求并把 moonhttp 的错误映射成本模块错误。
+/// 状态码校验留给调用方（423 自动重试需要先看到响应）。
+async fn WebdavClient::perform(
+  self : WebdavClient,
+  cfg : @config.Config,
+  signal? : @moonhttp.AbortSignal,
+) -> @moonhttp.Response raise @types.WebdavError {
+  self.http.request(cfg, signal?) catch {
     error => raise map_http_error(error, signal_reason(signal))
   }
-  check_status(response, operation~, ok~)
 }
 
 ///|
-/// 归一化锁令牌为 `Lock-Token` 头形态：`<令牌>`。
-/// 令牌可能自带尖括号（`Lock-Token` 响应头就是这种形状），也可能不带，
-/// 统一只包一层，不会出现 `<<令牌>>`。
-fn lock_token_uri(token : String) -> String {
-  "<" + @types.normalize_lock_token(token) + ">"
-}
-
-///|
-/// `If` 头里的锁令牌形态：`(<令牌>)`（RFC 4918 §10.4.1 的无标签列表）。
-fn lock_token_if_value(token : String) -> String {
-  "(" + lock_token_uri(token) + ")"
-}
-
-///|
-/// 把条件请求对象落到请求头上：`If-Match` / `If-None-Match`，以及
-/// 写操作携带锁令牌所需的 `If` 头。归一化后为空的锁令牌视为未设置。
+/// 把条件请求对象落到请求头上：`If-Match` / `If-None-Match`，以及锁令牌与
+/// 通用条件列表所需的 `If` 头（渲染规则见 if_header.mbt）。
+/// 归一化后为空的锁令牌视为未设置；没有任何条件时不动 `cfg`。
 fn apply_conditions(
   cfg : @config.Config,
   conditions : @types.Conditions?,
-) -> @config.Config {
+  operation~ : String,
+  url~ : String,
+) -> @config.Config raise @types.WebdavError {
   match conditions {
     Some(cond) => {
       let mut out = cfg
@@ -143,13 +183,9 @@ fn apply_conditions(
         Some(etag) => out = out.with_header("If-None-Match", etag)
         None => ()
       }
-      match cond.lock_token {
-        Some(token) =>
-          // 归一化后为空的令牌不发 `If: (<>)`，等同未设置。
-          if @types.normalize_lock_token(token) != "" {
-            out = out.with_header("If", lock_token_if_value(token))
-          }
-        None => ()
+      let if_value = render_if_header(cond, url~, operation~)
+      if if_value != "" {
+        out = out.with_header("If", if_value)
       }
       out
     }
