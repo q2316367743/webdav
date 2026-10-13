@@ -112,6 +112,7 @@ pub async fn WebdavClient::download_to_path_resume(
 | `src/client/status.mbt` | `status_message` 补 206 / 416 中文注解 |
 | `src/webdav.mbt` | 门面重导出 `ByteRange` / `ContentRange` |
 | `src/main/main.mbt` | e2e 演示第 5b / 5c 步：区间 206 校验 + 残留文件续传拼接比对 |
+| `src/main/testdata/verify_server.py` | e2e 兜底服务端：`do_GET` 经 `parse_bytes_range` 按 RFC 7233 回 206 / 416 |
 
 ## 5. 测试矩阵
 
@@ -127,8 +128,9 @@ pub async fn WebdavClient::download_to_path_resume(
 - 解析单元：标准 / 等号前缀 / 未知总长 `*` / 非法形态 / `bytes */total`。
 
 e2e（`bash src/main/run_tests.sh`，两阶段全绿）：brew webdav（hacdias 5.x，Go
-`http.ServeContent`）真实返回 206，区间内容与续传拼接逐字节比对通过，续传进度按
-绝对值输出（`22/61 → 61/61`）。
+`http.ServeContent`）与 python 兜底 `verify_server.py`（`parse_bytes_range`）
+都真实返回 206，区间内容与续传拼接逐字节比对通过，续传进度按绝对值输出
+（`22/61 → 61/61`）。
 
 ## 6. 已知限制
 

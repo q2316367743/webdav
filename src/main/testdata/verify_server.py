@@ -2,10 +2,12 @@
 """最小 WebDAV 验证服务器（run_tests.sh 的回退依赖）。
 
 仅用于本地验证 MoonBit WebDAV 客户端：支持 OPTIONS/PUT/MKCOL/GET/HEAD/
-DELETE/MOVE/COPY/PROPFIND/PROPPATCH/LOCK/UNLOCK，死属性与锁存内存
-（每次启动清空）。brew 版 `webdav`（hacdias）可用时优先用它，本脚本
-兜底——区别是本脚本的 PROPPATCH 死属性真的能读回，PROPFIND 也能
-读到 `lockdiscovery`（hacdias 只回空元素）。
+DELETE/MOVE/COPY/PROPFIND/PROPPATCH/LOCK/UNLOCK，GET 按 RFC 7233 处理
+`Range`（`bytes=a-b` / `a-` / `-N` → 206 + `Content-Range`，不可满足回
+416 + `bytes */total`），死属性与锁存内存（每次启动清空）。brew 版
+`webdav`（hacdias）可用时优先用它，本脚本兜底——区别是本脚本的
+PROPPATCH 死属性真的能读回，PROPFIND 也能读到 `lockdiscovery`
+（hacdias 只回空元素）。
 
 刻意对齐协议的几处细节（用于验证客户端的 P0 修复）：
 - Depth:1 不递归（只回直接子项），Depth:infinity 才回整棵树；
@@ -37,6 +39,30 @@ ROOT = sys.argv[2] if len(sys.argv) > 2 else "/tmp/webdav-verify-root"
 DEAD_PROPS = {}  # 服务器路径 -> {属性名: 值}
 NS_DEAD = "urn:q2316367743:webdav:prop"
 NO_HEAD_PREFIX = os.environ.get("VERIFY_NO_HEAD_PREFIX", "")
+
+
+def parse_bytes_range(header, total):
+    """解析 Range: bytes=a-b / a- / -N → (start, end)（含端）。
+
+    无头或形态不识别 → None（RFC 7233 要求忽略，回 200 全量）；
+    语法合法但不可满足（起点越界 / `bytes=-0` / 空文件）→ "unsatisfiable"。
+    """
+    if header is None:
+        return None
+    m = re.fullmatch(r"\s*bytes\s*=\s*(\d*)\s*-\s*(\d*)\s*", header)
+    if not m or (m.group(1) == "" and m.group(2) == ""):
+        return None
+    if total == 0:
+        return "unsatisfiable"
+    if m.group(1) == "":
+        if int(m.group(2)) == 0:
+            return "unsatisfiable"  # bytes=-0 不可满足
+        return (max(0, total - int(m.group(2))), total - 1)
+    start = int(m.group(1))
+    if start >= total:
+        return "unsatisfiable"
+    end = min(int(m.group(2)), total - 1) if m.group(2) else total - 1
+    return (start, end)
 
 
 class Handler(LockMixin, BaseHTTPRequestHandler):
@@ -96,7 +122,23 @@ class Handler(LockMixin, BaseHTTPRequestHandler):
         if not os.path.isfile(path):
             return self.send(404, b"not found")
         with open(path, "rb") as f:
-            self.send(200, f.read(), "application/octet-stream")
+            data = f.read()
+        rng = parse_bytes_range(self.headers.get("Range"), len(data))
+        if rng == "unsatisfiable":
+            self.send_response(416)
+            self.send_header("Content-Range", "bytes */%d" % len(data))
+            self.send_header("Content-Length", "0")
+            self.end_headers()
+            return
+        if rng is None:
+            return self.send(200, data, "application/octet-stream")
+        start, end = rng
+        self.send_response(206)
+        self.send_header("Content-Type", "application/octet-stream")
+        self.send_header("Content-Range", "bytes %d-%d/%d" % (start, end, len(data)))
+        self.send_header("Content-Length", str(end - start + 1))
+        self.end_headers()
+        self.wfile.write(data[start:end + 1])
 
     def do_HEAD(self):
         if NO_HEAD_PREFIX and urlparse(self.path).path.startswith(NO_HEAD_PREFIX):

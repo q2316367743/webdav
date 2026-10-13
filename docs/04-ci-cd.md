@@ -32,10 +32,12 @@
 
 1. 起 WebDAV 服务端——优先 brew 的 `webdav`，CI 上没有，于是回退
    `src/main/testdata/verify_server.py`，并设 `VERIFY_NO_HEAD_PREFIX=/demo`
-   覆盖客户端「HEAD 不支持 → PROPFIND `Depth:0` 回落」分支；
+   覆盖客户端「HEAD 不支持 → PROPFIND `Depth:0` 回落」分支；该脚本同样按
+   RFC 7233 处理 `Range`（206 + `Content-Range`，不可满足回 416），CI 上
+   区间下载与断点续传走的是真 206 路径；
 2. `moon test`（66 个用例）；
-3. `moon run src/main` 连真实服务端跑完整流程（上传 / 下载 / MOVE / COPY /
-   PROPPATCH / 特殊文件名 / 本地路径流式往返）；
+3. `moon run src/main` 连真实服务端跑完整流程（上传 / 下载 / 区间 206 /
+   断点续传 / MOVE / COPY / PROPPATCH / 特殊文件名 / 本地路径流式往返）；
 4. 关闭服务端并汇总，退出码 0 表示两阶段全过。
 
 脚本的阶段判定是「子进程退出码 + 输出标记」双条件：只看输出里的 `✓` / `✗`
