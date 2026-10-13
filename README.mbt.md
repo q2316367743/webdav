@@ -23,6 +23,8 @@ async fn main {
     password: Some("pass"),
     timeout_ms: None,
   })
+  // 递归建目录（mkdir -p 语义：逐级 MKCOL，父级 / 本级已存在都跳过）
+  client.mkdir_all(path="/demo/相册/2024")
   // 上传 · 全量字节（进度按 64 KiB 分块节奏回调；返回值带 ETag 等元数据）
   let put = client.put_file(
     path="/demo/hello.txt",
@@ -66,7 +68,7 @@ async fn main {
 |------|------|
 | 上传 | `put_file`（全量 `Bytes`）、`put_file_stream`（`&@io.Reader`，可选长度）、`put_file_from_path`（本地文件路径）；三者都流式发送、都回 `PutResult` |
 | 下载 | `get_file`（全量到内存，回 `GetResult`）、`download_file`（同步分块回调）、`download_to_path`（流式写本地文件） |
-| 目录 | `mkdir`、`list`（可指定 `Depth`）、`list_recursive`（整树）、`stat`（属性）、`exists`（HEAD，不支持时自动回退 PROPFIND） |
+| 目录 | `mkdir`（单级）、`mkdir_all`（逐级 `mkdir -p`，已存在跳过）、`list`（可指定 `Depth`）、`list_recursive`（整树）、`stat`（属性）、`exists`（HEAD，不支持时自动回退 PROPFIND） |
 | 移动 / 复制 | `move_path`、`copy_path`（覆盖语义 + `Depth`） |
 | 自定义属性 | `set_properties` / `get_properties` / `get_properties_with_status`（PROPPATCH / 按名 PROPFIND，保留 404 状态） |
 | 能力探测 | `options`（`DAV` / `Allow` / `Server` → `ServerCapabilities`） |
@@ -79,7 +81,9 @@ async fn main {
 
 ## 已知限制
 
-- `mkdir` 单级创建（父目录不存在得 409）。
+- `mkdir` 单级创建（父目录不存在得 409）；递归用 `mkdir_all`：逐级 MKCOL，
+  405（已存在）跳过，409 先 PROPFIND `Depth:0` 复核再决定跳过或抛出，
+  中途失败不回滚已建层级。
 - 锁做独占与共享写锁、完整 `If`（多令牌 / `Not` / `[etag]` / 带标签列表）、
   lock-null 清理与可选的 423 自动补令牌重试；`Depth: 1` 的 LOCK 按 RFC 4918
   §9.10.3 本地拦 400，不做 5xx / 断线退避重试，锁注册表只是进程内缓存（不跨进程）；

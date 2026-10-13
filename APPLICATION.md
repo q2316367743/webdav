@@ -22,7 +22,7 @@ WebDAV 是文件同步和网盘接入领域的事实标准协议，Nextcloud、o
 
 **本期交付范围（RFC 4918 核心）：**
 
-- **HTTP 方法封装**：完整支持 PROPFIND（列目录 `list` / 单资源属性 `stat` / 按名取属性 `get_properties`）、PROPPATCH（`set_properties` 设置自定义属性）、MKCOL（`mkdir`）、GET（`get_file` 一次取全 / `download_file` 流式下载）、PUT（`put_file`）、DELETE、COPY/MOVE（`copy_path` / `move_path`，含 `overwrite` 开关与 `Destination` 头的 URL 编码）、LOCK/UNLOCK（`lock` / `refresh_lock` / `unlock`，配合 `get_locks` 读 `lockdiscovery`，锁令牌经 `Conditions::new(lock_token=…)` 让写操作自动带 `If: (<令牌>)`）
+- **HTTP 方法封装**：完整支持 PROPFIND（列目录 `list` / 单资源属性 `stat` / 按名取属性 `get_properties`）、PROPPATCH（`set_properties` 设置自定义属性）、MKCOL（`mkdir` 单级 / `mkdir_all` 逐级递归）、GET（`get_file` 一次取全 / `download_file` 流式下载）、PUT（`put_file`）、DELETE、COPY/MOVE（`copy_path` / `move_path`，含 `overwrite` 开关与 `Destination` 头的 URL 编码）、LOCK/UNLOCK（`lock` / `refresh_lock` / `unlock`，配合 `get_locks` 读 `lockdiscovery`，锁令牌经 `Conditions::new(lock_token=…)` 让写操作自动带 `If: (<令牌>)`）
 - **Multi-Status 响应解析**：WebDAV 区别于普通 HTTP 的关键在于 `207 Multi-Status` 响应体。一个 PROPFIND 可能对部分资源部分成功、部分失败，需要解析 XML 响应体才能确定每个资源的具体状态。本库提供类型化的 Multi-Status 解析器，将 `response`、`href`、`propstat`、`status` 等 XML 元素解析为 `ParsedResource` 并映射为 `FileInfo` / 属性表，`href` 自动 percent 解码得到显示名
 - **属性系统**：支持 PROPFIND 的 `allprop` 与指定属性（named prop）两种请求模式，解析标准 DAV 属性（`getcontentlength`、`getlastmodified`、`getetag`、`resourcetype`、`getcontenttype`、`creationdate` 等）；PROPPATCH 支持在自定义命名空间下设置属性
 - **传输增强**：流式下载按块回调（`on_chunk` + 可调 `chunk_size`，内存占用与文件大小无关）、上传 / 下载进度回调（`Progress`，含 `percent()` 完成比例）、单请求超时（`timeout_ms`）、路径 percent 编解码（中文、空格等特殊文件名上传 / 下载往返一致）

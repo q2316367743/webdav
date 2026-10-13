@@ -51,6 +51,7 @@ src/main/   演示程序（executable，.moonignore 已排除，不随包发布�
 | `download_file` | GET | 同上 | - | 200（流式回调） |
 | `download_to_path` | GET | 同上 | - | 200（流式写盘） |
 | `mkdir` | MKCOL | - | - | 201 |
+| `mkdir_all` | MKCOL（逐级） | - | - | 201；405 = 已存在跳过；409 = PROPFIND 复核后跳过或抛出 |
 | `delete` | DELETE | - | - | 200/204/207（207 有失败条目 → `Partial`） |
 | `exists` | HEAD | - | - | 200/204/304→true，404→false，405/501→回退 PROPFIND |
 | `options` | OPTIONS | - | - | 200/204（读 `DAV` / `Allow` / `Server`） |
@@ -232,11 +233,11 @@ PROPFIND `Depth:0` allprop 再判定（404 → false，其余重抛）。这样�
   坑：`MockTransport` 记录 `RequestBody::Stream` 引用但**不消费**，
   `MemoryReader` / `PipeRead` 的生产者协程会永久阻塞并在收尾时报 dead lock，
   故 mock 用例统一用 `temp_reader`（临时文件 + `@fs.File`）造 pull 型流。
-- 当前规模：`moon test --target native` 139 个用例全绿。
+- 当前规模：`moon test --target native` 148 个用例全绿。
 - 一键测试：`bash src/main/run_tests.sh`——自动起 WebDAV 服务端（优先
   brew 的 `webdav`，回退 `src/main/testdata/verify_server.py`）、跑
   `moon test` 全套测试、连真实服务端跑 `moon run src/main` 全流程
-  （含 testdata 真实文件往返：`binary.bin` 100 KiB 走 `put_file_from_path`
+  （含递归建目录 `mkdir_all` 建多级中文路径 + 幂等重跑，以及 testdata 真实文件往返：`binary.bin` 100 KiB 走 `put_file_from_path`
   本地路径上传（64 KiB 分块进度）→ `download_to_path` 写盘 → 逐字节比对，
   以及 `put_file` 全量形态 + 中文文件名端到端编码），
   最后关闭服务端并汇总 PASS/FAIL。真实链路还会跑一遍锁流程（LOCK → 无令牌 PUT
@@ -282,7 +283,10 @@ PROPFIND `Depth:0` allprop 再判定（404 → false，其余重抛）。这样�
 - 上传 / 下载各有三种形态，选择口径：内容已在内存 → `put_file` / `get_file`；
   数据源是流或磁盘上的大文件 → `put_file_stream` / `put_file_from_path`；
   要落盘 → `download_to_path`（同步 `on_chunk` 回调里 await 不了 async 写盘）；
-- `mkdir` 是单级（409 = 父不存在），递归创建留待后续；
+- `mkdir` 是单级（409 = 父不存在），递归创建用 `mkdir_all`（`src/client/mkdir_all.mbt`）：
+  逐级 MKCOL（`collection_prefixes` 切前缀），405 视为已存在跳过、409 先 PROPFIND
+  `Depth:0` 复核——存在（并发创建）则跳过，不存在才抛出，避免父级不是集合时
+  「逐级跳过、最后假装成功」；`/` 与空串不发请求，重复 / 结尾斜杠折叠；
 - 锁支持**独占与共享写锁**、完整的 `If`（多令牌列表析取、列表内合取、`Not`、
   `[etag]`、带标签列表 `</url> (<令牌>)`）、lock-null 清理（`cleanup_lock_null`）
   与可选的 423 自动补令牌重试（`WebdavConfig::retry_on_423`，默认关）；

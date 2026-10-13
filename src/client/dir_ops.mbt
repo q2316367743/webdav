@@ -7,7 +7,8 @@
 pub const DEFAULT_PROP_NS : String = "urn:q2316367743:webdav:prop"
 
 ///|
-/// 创建目录（MKCOL）。单级创建：父目录不存在时服务端通常返回 409。
+/// 创建目录（MKCOL）。单级创建：父目录不存在时服务端通常返回 409，
+/// 需要 `mkdir -p` 语义时用 `mkdir_all`（见 mkdir_all.mbt）。
 /// `conditions` 可用于 `If-None-Match: *`（父目录已存在时不要覆盖）
 /// 或携带锁令牌。
 pub async fn WebdavClient::mkdir(

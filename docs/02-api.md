@@ -126,7 +126,8 @@ match error.detail() {
 | `get_file` | `path~` → `GetResult` | GET 全量下载到内存 |
 | `download_file` | `path~, on_chunk~ : (Bytes) -> Unit, chunk_size?` | 流式分块下载（默认 64 KiB；同步回调，适合内存消费） |
 | `download_to_path` | `path~, local_path~ : String, chunk_size?` | 流式下载**写本地文件**（拿到 200 才建文件；async 写盘在内部完成） |
-| `mkdir` | `path~` | MKCOL 单级建目录 |
+| `mkdir` | `path~` | MKCOL 单级建目录（父不存在 → `Api(409)`） |
+| `mkdir_all` | `path~` | MKCOL **逐级**建目录（`mkdir -p` 语义；405 已存在跳过，409 复核存在性） |
 | `delete` | `path~` | DELETE（207 部分失败 → `Partial`） |
 | `exists` | `path~` → Bool | HEAD；405/501 自动回退 PROPFIND `Depth:0` |
 | `list` | `path~, depth? : Depth` → `Array[FileInfo]` | 默认 `Depth::One`，不含自身 |
@@ -154,6 +155,23 @@ match error.detail() {
 - 服务端 href 与用户 path 不同纲：统一经 `@types.href_to_path` 归一
   （剥 scheme/authority、丢 `?query` / `#fragment`、percent 解码、去尾斜杠）后比较，
   因此绝对 URL 形式的 href 也能正确排除自身、算出显示名。
+
+### 递归建目录（`mkdir_all`）
+
+`mkdir_all` 把 `path` 按 `/` 切成自顶向下的各级路径，逐级发 MKCOL（父级先建）：
+
+- 某级已存在 → 服务端按 RFC 4918 §9.3.1 回 **405**（Method Not Allowed）→ 跳过、
+  继续下一级；末级已存在同样算成功，因此对已存在的目录重复调用是**幂等**的；
+- 某级回 **409**（父目录不存在 / 父级不是集合）→ 先用 PROPFIND `Depth:0` 复核该级
+  是否真的存在：存在（并发创建）则跳过，不存在则抛出原 409。没有这步复核，
+  父级是文件时会出现「逐级跳过、最后假装成功」的假成功；
+- `path` 为 `/` 或空串（基地址自身，视作已存在）→ **不发任何请求**，直接返回；
+- 重复斜杠与结尾斜杠被折叠 / 忽略；不以 `/` 开头时按同 `mkdir` 的规则补上；
+- `conditions?` 逐级生效（等价于逐级调用 `mkdir`）：带 `If-None-Match: *` 时已存在的
+  层级会回 412 而不是 405，需要幂等时不要传该条件；
+- 中途失败（如某级 403）原样抛出，**已建好的层级不回滚**（WebDAV 无事务语义）。
+
+实现与请求顺序见 `src/client/mkdir_all.mbt`（单级 `mkdir` 仍在 `src/client/dir_ops.mbt`）。
 
 ### 进度回调节奏
 
@@ -296,5 +314,6 @@ DELETE / MOVE / COPY 在服务端返回 207 且部分条目失败（非 2xx）�
 ### 错误状态码语义（message 中文注解）
 
 常见映射：401 未认证（查凭据）、403 无权限、404 不存在、405 目标已存在
-（MKCOL）或方法不支持、409 父目录不存在（MKCOL）、412 目标存在且不允许覆盖
+（MKCOL，`mkdir` 抛错、`mkdir_all` 视为已存在并跳过）、409 父目录不存在
+（MKCOL，`mkdir_all` 复核后决定跳过还是抛出）、412 目标存在且不允许覆盖
 （MOVE/COPY overwrite=false）、423 资源被锁定、507 存储空间不足。

@@ -46,6 +46,13 @@ async fn main {
     // 1. 建目录
     client.mkdir(path="/demo")
     println("✓ MKCOL /demo")
+    // 1b. 递归建目录（mkdir -p）：逐级 MKCOL，中间层不存在时也要建起来
+    client.mkdir_all(path="/demo/相册/2024/深/层")
+    let deep = client.stat(path="/demo/相册/2024/深/层")
+    check(deep.is_dir, "MKCOL-ALL /demo/相册/2024/深/层")
+    // 再调一次：所有层级已存在，服务端回 405 被跳过，且不抛错（幂等）
+    client.mkdir_all(path="/demo/相册/2024/深/层")
+    println("✓ MKCOL-ALL 幂等（已存在层级回 405 跳过）")
     // 2. 上传（真实网络分块进度）
     let payload = @utf8.encode(
       "你好，WebDAV！这是 MoonBit 客户端上传的内容。\n",
@@ -159,6 +166,11 @@ async fn main {
     // 10. 清理
     client.delete(path="/demo/copy.txt")
     client.delete(path="/demo/renamed.txt")
+    // mkdir_all 建的层级自底向上删（目录要先清空才能删）
+    client.delete(path="/demo/相册/2024/深/层")
+    client.delete(path="/demo/相册/2024/深")
+    client.delete(path="/demo/相册/2024")
+    client.delete(path="/demo/相册")
     client.delete(path="/demo")
     if failures.is_empty() {
       println("✓ 清理完成，演示全部通过")

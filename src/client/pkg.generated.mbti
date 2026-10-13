@@ -35,6 +35,7 @@ pub async fn WebdavClient::list(Self, path~ : String, depth? : @types.Depth, con
 pub async fn WebdavClient::list_recursive(Self, path~ : String, conditions? : @types.Conditions, signal? : @abort.AbortSignal) -> Array[@types.FileInfo] raise @types.WebdavError
 pub async fn WebdavClient::lock(Self, path~ : String, owner? : String, timeout? : String, depth? : @types.Depth, scope? : @types.LockScope, signal? : @abort.AbortSignal) -> @types.LockResult raise @types.WebdavError
 pub async fn WebdavClient::mkdir(Self, path~ : String, conditions? : @types.Conditions, signal? : @abort.AbortSignal) -> Unit raise @types.WebdavError
+pub async fn WebdavClient::mkdir_all(Self, path~ : String, conditions? : @types.Conditions, signal? : @abort.AbortSignal) -> Unit raise @types.WebdavError
 pub async fn WebdavClient::move_path(Self, src~ : String, dst~ : String, overwrite? : Bool, depth? : @types.Depth, conditions? : @types.Conditions, signal? : @abort.AbortSignal) -> Unit raise @types.WebdavError
 pub async fn WebdavClient::options(Self, path? : String, signal? : @abort.AbortSignal) -> @types.ServerCapabilities raise @types.WebdavError
 pub async fn WebdavClient::put_file(Self, path~ : String, data~ : Bytes, content_type? : String, conditions? : @types.Conditions, on_progress? : (@types.Progress) -> Unit, signal? : @abort.AbortSignal) -> @types.PutResult raise @types.WebdavError

@@ -3,7 +3,7 @@
 本文件列出「外部 WebDAV 客户端还缺什么接口」的结论：P0 是**现有 12 个接口的
 协议正确性**问题（已全部落地），P1 / P2 是能力扩展方向。
 
-> 说明：P0、「传输形态补强」与「锁支持」已落地；其余 P1 / P2 仍是候选。
+> 说明：P0、「传输形态补强」、「锁支持」与「递归建目录」已落地；其余 P1 / P2 仍是候选。
 > 业界对标基于 RFC 4918（WebDAV）与领域常识整理，
 > **未经联网核实**，采用前建议逐条复核。
 
@@ -22,6 +22,17 @@
 
 配套新增错误分支 `WebdavError::Io`（本地文件打不开 / 创建失败 / 写盘失败），
 细节见 `docs/02-api.md` 的「本地文件形态」与 `docs/01-architecture.md` 的第 3 / 4 节。
+
+## 递归建目录（已实现）
+
+单级 `mkdir` 在父目录不存在时只能拿到 409，调用方往往要自己从根往回拼路径。
+
+| 能力 | 入口 | 说明 |
+|------|------|------|
+| 递归建目录 | `mkdir_all(path~)` | 把路径切成自顶向下的各级依次 MKCOL；405（已存在）跳过、409 先 PROPFIND `Depth:0` 复核（并发创建则跳过，否则抛出原错误）；`/` 与空串不发请求；对已存在的目录幂等 |
+
+实现见 `src/client/mkdir_all.mbt`（`collection_prefixes` + `mkcol_tolerate_existing`），
+契约见 `docs/02-api.md` 的「递归建目录（`mkdir_all`）」。
 
 ## 锁支持（已实现，0.2.0 补齐 P1 扩展）
 
@@ -66,22 +77,20 @@ RFC 4918 §9.10 / §9.11 的写锁闭环，0.2.0 起含共享锁与完整的 `If
 
 按「使用频率 × 实现成本」粗排，尚未实现：
 
-1. **递归建目录（`mkdir(parents=true)`）**：现在 MKCOL 单级（父不存在得 409），
-   补一个 `mkdir_all` 逐级 MKCOL、409/405 视为已存在。
-2. **Range / 断点续传**：`download_file` / `download_to_path` 增 `range? : (Int, Int)`，
+1. **Range / 断点续传**：`download_file` / `download_to_path` 增 `range? : (Int, Int)`，
    `get_file` 同理；配套 `Accept-Ranges` / `Content-Range` 解析（当前
    `download_to_path` 失败后只能整体重下）。
-3. **认证面扩展**：moonhttp 只内置 Basic（`with_auth`）。Digest 需要自己拼
+2. **认证面扩展**：moonhttp 只内置 Basic（`with_auth`）。Digest 需要自己拼
    `Authorization`（自定义头可绕过，moonhttp 的 `set_if_absent` 不覆盖用户头），
    Bearer / OAuth 同理；可选做 `AuthProvider` 抽象。
-4. **重定向 / 代理 / 超时策略暴露**：moonhttp 的 `max_redirects`、
+3. **重定向 / 代理 / 超时策略暴露**：moonhttp 的 `max_redirects`、
    `with_proxy`、按请求 timeout 目前被客户端默认配置挡住，可按需透传。
    大文件的整跳超时（覆盖「写完整个请求体」）尤其值得暴露。
-5. **属性删除与命名空间区分**：PROPPATCH 现在只 set；补 remove
+4. **属性删除与命名空间区分**：PROPPATCH 现在只 set；补 remove
    （`<D:remove>`），并让 `PropResult` 带上命名空间以免同名属性撞车。
-6. **取消语义细化**：区分「用户取消」与「超时取消」（moonhttp 的
+5. **取消语义细化**：区分「用户取消」与「超时取消」（moonhttp 的
    `AbortSignal::reason()` 已能携带原因，`Cancelled(reason)` 已预留位置）。
-7. **锁能力扩展（0.2.0 已实现）**：共享锁（`shared`）、带标签 `If`（`</url> (<令牌>)`）、
+6. **锁能力扩展（0.2.0 已实现）**：共享锁（`shared`）、带标签 `If`（`</url> (<令牌>)`）、
    `Not` / ETag 形态 `If`、多令牌列表、lock-null 的创建清理、按 423 自动重试
    （`retry_on_423`，默认关）；`Depth: 1` 的 LOCK 按 RFC 4918 §9.10.3 **裁定不做**
    （本地仍回 400）。实现记录见 `docs/05-lock-extensions.md`。
@@ -105,6 +114,6 @@ RFC 4918 §9.10 / §9.11 的写锁闭环，0.2.0 起含共享锁与完整的 `If
 
 ## 与本次实现的对应关系
 
-P0 的行、「传输形态补强」与「锁支持」表已在代码中落地，逐项见
+P0 的行、「传输形态补强」、「递归建目录」与「锁支持」表已在代码中落地，逐项见
 `docs/01-architecture.md` 的「协议映射」与 `docs/02-api.md` 的签名说明；
 P1 / P2 其余条目仍为路线图，**未实现**，不构成当前 API 契约。
