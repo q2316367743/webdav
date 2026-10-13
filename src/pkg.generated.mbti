@@ -28,7 +28,11 @@ pub using @abort {type AbortSignal}
 
 pub using @types {type ActiveLock}
 
+pub using @types {type ByteRange}
+
 pub using @types {type Conditions}
+
+pub using @types {type ContentRange}
 
 pub using @types {type Depth}
 

@@ -3,7 +3,8 @@
 本文件列出「外部 WebDAV 客户端还缺什么接口」的结论：P0 是**现有 12 个接口的
 协议正确性**问题（已全部落地），P1 / P2 是能力扩展方向。
 
-> 说明：P0、「传输形态补强」、「锁支持」与「递归建目录」已落地；其余 P1 / P2 仍是候选。
+> 说明：P0、「传输形态补强」、「锁支持」、「递归建目录」与「Range / 断点续传」已落地；
+> 其余 P1 / P2 仍是候选。
 > 业界对标基于 RFC 4918（WebDAV）与领域常识整理，
 > **未经联网核实**，采用前建议逐条复核。
 
@@ -55,6 +56,21 @@ RFC 4918 §9.10 / §9.11 的写锁闭环，0.2.0 起含共享锁与完整的 `If
 给 Python 兜底服务器补上锁表与 `If` 解析，让独占 / 共享锁、带标签 `If`、lock-null
 与 423 重试在真实链路可跑（hacdias 不支持的部分按预期软跳过）。
 
+## Range / 断点续传（已实现，0.3.0 补齐 P1 第 1 条）
+
+RFC 7233 区间下载与断点续传，解决「`download_to_path` 失败后只能整体重下」：
+
+| 能力 | 入口 | 说明 |
+|------|------|------|
+| 区间下载 | `get_file` / `download_file` / `download_to_path` 增 `range? : ByteRange` | 发 `Range` 头；服务端接受回 206（`GetResult.status` / `content_range` 区分），忽略则回 200 全量 |
+| 区间构造 | `ByteRange::from(start?, end?)` / `ByteRange::suffix(length)` | `bytes=N-` / `bytes=N-M` / `bytes=-N`；`end` 为含端 |
+| 断点续传 | `download_to_path_resume(path~, local_path~, etag?, …)` | 本地已有 N 字节则发 `Range: bytes=N-`，206 追加、200 回退重写、416 且已下完视为成功；`etag?` 发 `If-Range` 防服务端文件已变 |
+| Content-Range 解析 | `GetResult.content_range? : ContentRange` | `bytes first-last/total` → 区间起止与资源总长（`*` 时 `total` 为 `None`） |
+
+细节见 `docs/06-range-resume.md`；进度在续传路径按**绝对值**累计（`loaded` 从本地
+已有字节起计）。不支持的形态：多区间（`bytes=0-1,5-9`）、multipart/byteranges
+响应、`Accept-Ranges` 显式暴露（探测支持与否直接发一次小区间请求看是否 206 更可靠）。
+
 ## P0：协议正确性（已实现）
 
 这些不是「缺新接口」，而是现有接口在真实服务器上会出错的地方。
@@ -77,9 +93,10 @@ RFC 4918 §9.10 / §9.11 的写锁闭环，0.2.0 起含共享锁与完整的 `If
 
 按「使用频率 × 实现成本」粗排，尚未实现：
 
-1. **Range / 断点续传**：`download_file` / `download_to_path` 增 `range? : (Int, Int)`，
-   `get_file` 同理；配套 `Accept-Ranges` / `Content-Range` 解析（当前
-   `download_to_path` 失败后只能整体重下）。
+1. **Range / 断点续传（0.3.0 已实现）**：三个下载方法增 `range? : ByteRange`
+   （结构体而非 tuple，才能表达 `bytes=N-` 开放末端），配套 `Content-Range`
+   解析与 206 / 416 状态分支；`download_to_path_resume` 以本地残留为起点续传，
+   `etag?` 发 `If-Range` 保证服务端文件未变。实现记录见 `docs/06-range-resume.md`。
 2. **认证面扩展**：moonhttp 只内置 Basic（`with_auth`）。Digest 需要自己拼
    `Authorization`（自定义头可绕过，moonhttp 的 `set_if_absent` 不覆盖用户头），
    Bearer / OAuth 同理；可选做 `AuthProvider` 抽象。
@@ -114,6 +131,6 @@ RFC 4918 §9.10 / §9.11 的写锁闭环，0.2.0 起含共享锁与完整的 `If
 
 ## 与本次实现的对应关系
 
-P0 的行、「传输形态补强」、「递归建目录」与「锁支持」表已在代码中落地，逐项见
-`docs/01-architecture.md` 的「协议映射」与 `docs/02-api.md` 的签名说明；
-P1 / P2 其余条目仍为路线图，**未实现**，不构成当前 API 契约。
+P0 的行、「传输形态补强」、「递归建目录」、「锁支持」与「Range / 断点续传」表已在
+代码中落地，逐项见 `docs/01-architecture.md` 的「协议映射」与 `docs/02-api.md` 的
+签名说明；P1 / P2 其余条目仍为路线图，**未实现**，不构成当前 API 契约。

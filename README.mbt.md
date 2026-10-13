@@ -2,8 +2,8 @@
 
 [![CI](https://github.com/q2316367743/webdav/actions/workflows/ci.yml/badge.svg)](https://github.com/q2316367743/webdav/actions/workflows/ci.yml)
 
-MoonBit WebDAV 客户端：文件上传 / 下载（全量字节、读取流、本地文件路径，流式 + 进度）、
-目录、移动 / 复制、PROPFIND / PROPPATCH。基于
+MoonBit WebDAV 客户端：文件上传 / 下载（全量字节、读取流、本地文件路径，流式 + 进度 +
+Range 断点续传）、目录、移动 / 复制、锁、PROPFIND / PROPPATCH。基于
 [moonhttp](https://mooncakes.io/docs/#/q2316367743/moonhttp/)
 与 [Milky2018/xml](https://mooncakes.io/docs/#/Milky2018/xml/) 构建，仅 native 后端。
 
@@ -59,6 +59,16 @@ async fn main {
   )
   // 流式下载 · 直接写本地文件（写盘是 async，客户端内部完成）
   client.download_to_path(path="/demo/big.bin", local_path="/Users/me/big.copy")
+  // 断点续传：中断残留的本地文件从断点继续（只拉剩余部分）；
+  // 带 ETag 发 If-Range，服务端文件已变时自动回退全文重写
+  client.download_to_path_resume(
+    path="/demo/big.bin",
+    local_path="/Users/me/big.copy",
+    etag=put.etag.unwrap_or(""),
+  )
+  // 区间下载：只取前 8 字节（服务端支持时回 206）
+  let head = client.get_file(path="/demo/hello.txt",
+    range=@webdav.ByteRange::from(end=7))
 }
 ```
 
@@ -67,7 +77,8 @@ async fn main {
 | 类别 | 方法 |
 |------|------|
 | 上传 | `put_file`（全量 `Bytes`）、`put_file_stream`（`&@io.Reader`，可选长度）、`put_file_from_path`（本地文件路径）；三者都流式发送、都回 `PutResult` |
-| 下载 | `get_file`（全量到内存，回 `GetResult`）、`download_file`（同步分块回调）、`download_to_path`（流式写本地文件） |
+| 下载 | `get_file`（全量到内存，回 `GetResult`）、`download_file`（同步分块回调）、`download_to_path`（流式写本地文件）；三者都支持 `range? : ByteRange` 区间下载（服务端接受时 206，`GetResult.content_range` 携带区间与总长） |
+| 断点续传 | `download_to_path_resume`：以本地残留为起点发 `Range: bytes=N-`，206 追加 / 200 回退重写 / 416 且已下完视为成功；`etag?` 发 `If-Range` 防服务端文件已变，进度为绝对值，成功返回 = 文件完整 |
 | 目录 | `mkdir`（单级）、`mkdir_all`（逐级 `mkdir -p`，已存在跳过）、`list`（可指定 `Depth`）、`list_recursive`（整树）、`stat`（属性）、`exists`（HEAD，不支持时自动回退 PROPFIND） |
 | 移动 / 复制 | `move_path`、`copy_path`（覆盖语义 + `Depth`） |
 | 自定义属性 | `set_properties` / `get_properties` / `get_properties_with_status`（PROPPATCH / 按名 PROPFIND，保留 404 状态） |
@@ -88,8 +99,11 @@ async fn main {
   lock-null 清理与可选的 423 自动补令牌重试；`Depth: 1` 的 LOCK 按 RFC 4918
   §9.10.3 本地拦 400，不做 5xx / 断线退避重试，锁注册表只是进程内缓存（不跨进程）；
   锁发现依赖服务端实现 `lockdiscovery`（hacdias/webdav 只回空元素）。
-- 路径形态的传输只覆盖单文件；目录镜像 / 同步、Range 断点续传、
-  push 型（Writer）上传仍是路线图。
+- 路径形态的传输只覆盖单文件；目录镜像 / 同步、push 型（Writer）上传仍是路线图。
+- Range / 断点续传只做单区间（无多区间 / multipart），区间端点与进度受 `Int32`
+  上限约束（>2GB 资源不支持）；`If-Range` 仅支持 ETag；不带 `etag` 的裸续传在
+  服务端文件被整体替换时可能拼出损坏内容。详见
+  [docs/06-range-resume.md](docs/06-range-resume.md) 的已知限制。
 - 更多缺口与 P1 / P2 路线图见 [docs/03-gap-analysis.md](docs/03-gap-analysis.md)。
 
 ## 文档
@@ -99,6 +113,7 @@ async fn main {
 - [docs/03-gap-analysis.md](docs/03-gap-analysis.md) —— 缺口分析与路线图
 - [docs/04-ci-cd.md](docs/04-ci-cd.md) —— CI / CD：测试与发布工作流
 - [docs/05-lock-extensions.md](docs/05-lock-extensions.md) —— 锁能力扩展：共享锁、`If` 头、lock-null 清理与 423 重试
+- [docs/06-range-resume.md](docs/06-range-resume.md) —— Range 区间下载与断点续传
 
 ## 开发
 

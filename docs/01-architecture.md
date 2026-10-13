@@ -15,14 +15,16 @@ src/webdav.mbt + src/moon.pkg   根包（门面）：using 重导出 + 薄包装
         │        client（send / url_for / 配置 / apply_conditions）· status（状态码判定 / 207 失败提取）
         │        probe_ops（OPTIONS / exists）· dir_ops · transfer_ops
         │        file_ops（上传三形态：put_file / put_file_stream / put_file_from_path）
-        │        download_ops（get_file 全量 / download_file 回调 / download_to_path 写盘）
+        │        download_ops（get_file 全量 / download_file 回调 / download_to_path 写盘，
+        │                    三者带 range? 区间下载；write_stream_to_file 公共写盘循环）
+        │        download_resume（download_to_path_resume 断点续传状态机）
         │        lock_ops（LOCK / refresh_lock / UNLOCK / get_locks）
         │        lock_parse（lockdiscovery 解析）· lock_cleanup（lock-null 清理）
         │        lock_registry（已知锁注册表 / 423 覆盖判定）· if_header（If 头渲染）
         │        ├──> src/types/    公共类型（配置 / FileInfo / Progress / 错误 /
         │        │                  protocol：Depth·Conditions·IfList·IfCondition·
         │        │                  ServerCapabilities·PropResult·ResourceFailure /
-        │        │                  result：Put·Get /
+        │        │                  result：Put·Get / range：ByteRange·ContentRange /
         │        │                  lock：ActiveLock·LockResult·LockScope）
         │        │                  + percent 编解码与 href 归一
         │        └──> src/xmlutil/  PROPFIND / PROPPATCH / lockinfo 请求体生成、
@@ -47,9 +49,10 @@ src/main/   演示程序（executable，.moonignore 已排除，不随包发布�
 | `put_file` | PUT | Content-Type（可选）、If-Match / If-None-Match | 流式请求体（BytesReader 拉取，定长 Content-Length） | 200/201/204 |
 | `put_file_stream` | PUT | 同上 | 调用方给的 `&@io.Reader`（定长或 chunked） | 200/201/204 |
 | `put_file_from_path` | PUT | 同上 | 本地文件句柄（定长 = 文件长度，边读边发） | 200/201/204 |
-| `get_file` | GET | If-Match / If-None-Match | - | 200 |
-| `download_file` | GET | 同上 | - | 200（流式回调） |
-| `download_to_path` | GET | 同上 | - | 200（流式写盘） |
+| `get_file` | GET | Range（`range?`，可选）、If-Match / If-None-Match | - | 200；带 Range 时 206（回 `content_range`） |
+| `download_file` | GET | 同上 | - | 200（流式回调）；带 Range 时 206 |
+| `download_to_path` | GET | 同上 | - | 200（流式写盘）；带 Range 时 206 |
+| `download_to_path_resume` | GET | Range: bytes=N-、If-Range（`etag?`，可选） | - | 206（追加）/ 200（回退重写）/ 416（= 本地已完整时成功） |
 | `mkdir` | MKCOL | - | - | 201 |
 | `mkdir_all` | MKCOL（逐级） | - | - | 201；405 = 已存在跳过；409 = PROPFIND 复核后跳过或抛出 |
 | `delete` | DELETE | - | - | 200/204/207（207 有失败条目 → `Partial`） |
@@ -123,18 +126,28 @@ moonhttp 0.5 支持流式请求体（`Config::with_data_from_stream(reader, cont
 `send_put` 后用 `Result` 汇聚）。本地打不开 / 是目录 → `WebdavError::Io`，此时
 **还没发出任何请求**。
 
-### 4. 下载三形态
+### 4. 下载三形态与区间 / 续传
 
-- `get_file`：`Client::request` 全量读进内存，回 `GetResult`（内容 + 响应元数据）；
+- `get_file`：`Client::request` 全量读进内存，回 `GetResult`（内容 + 响应元数据 +
+  206 时的 `content_range`）；
 - `download_file` / `download_to_path`：共用私有 `open_get_stream`（组装 GET →
-  `Client::stream` → 非 200 先 `close()` 再抛 `Api`），再循环
+  `Client::stream` → 非期望状态码先 `close()` 再抛 `Api`），再循环
   `read_some(max_len=chunk_size)`：每块交 `on_chunk`（内存消费）或
   `file.write(chunk)`（写盘，async 只能在内部做），`loaded` 累计回调 `on_progress`，
   `total` 取响应头 `Content-Length`（缺失为 `None`）。
+- **带 `range?` 时**：请求附 `Range` 头，期望状态码集合变 `[200, 206]`——服务端
+  忽略 Range 回 200 全量也照常成功，调用方以 `status` / `GetResult.content_range`
+  区分。写盘循环抽成 `write_stream_to_file(stream, local_path~, append~, offset~,
+  total~, …)`，`download_to_path` 与续传共用（`append=false, offset=0` 即原路径）。
 - 结束 / 异常都保证 `close()`（try/catch 包裹 + Result 汇聚）；读流异常经
   `map_http_error` 归一（取消 → `Cancelled`，其余 → `Http`）；写盘异常 → `Io`。
-- `download_to_path` 刻意**先请求、拿到 200 才 `@fs.create` 本地文件**：404 等
-  失败不会清空本地同名文件；失败或取消时留下部分内容（不自动删除）。
+- `download_to_path` 刻意**先请求、拿到 200 / 206 才建本地文件**：404 等失败不会
+  清空本地同名文件；失败或取消时留下部分内容（不自动删除）。
+- `download_to_path_resume`（`download_resume.mbt`）把「失败残留」变成续传起点：
+  `offset` = 本地已有字节数（0 时委托全量下载），发 `Range: bytes=N-` +
+  可选 `If-Range`；206 校验 `Content-Range` 起点后 `@fs.open(append=true)` 追加，
+  200 截断重写，416 且 `bytes */total` 的 total == offset 视为已完整成功；
+  总长已知时写完校验本地大小，进度按绝对值累计。详见 `docs/06-range-resume.md`。
 
 ### 5. XML 解析（src/xmlutil）
 
@@ -221,7 +234,10 @@ PROPFIND `Depth:0` allprop 再判定（404 → false，其余重抛）。这样�
   `dir_ops_test` 覆盖 Depth 与绝对 href 归一、`file_ops_test` 覆盖三种上传形态
   （含 `Io` 分支：本地文件不存在 / 路径是目录时**不发请求**）、
   `download_ops_test` 覆盖 `get_file` / `download_file` / `download_to_path`
-  （分块写盘、覆盖已有文件、404 不创建本地文件、父目录不存在 → `Io`）；
+  （分块写盘、覆盖已有文件、404 不创建本地文件、父目录不存在 → `Io`），
+  `download_range_test` 覆盖区间下载与断点续传（Range 头形状、206 `content_range`
+  解析、200 回退、416 分支、resume 的追加 / 重写 / 已完成 / 起点不符 / 缺头，
+  以及 `ByteRange` 渲染与 `Content-Range` 解析单元）；
   `lock_ops_test` 覆盖 LOCK 请求形状与令牌来源优先级、刷新 / 解锁的头形态与
   空令牌本地拦截、锁发现请求体与解析、`If` 与 `If-Match` 共存、423 错误映射；
   `if_header_test` 覆盖 `If` 渲染（多令牌 / `Not` / `[etag]` / 带标签 / 与
@@ -233,11 +249,12 @@ PROPFIND `Depth:0` allprop 再判定（404 → false，其余重抛）。这样�
   坑：`MockTransport` 记录 `RequestBody::Stream` 引用但**不消费**，
   `MemoryReader` / `PipeRead` 的生产者协程会永久阻塞并在收尾时报 dead lock，
   故 mock 用例统一用 `temp_reader`（临时文件 + `@fs.File`）造 pull 型流。
-- 当前规模：`moon test --target native` 148 个用例全绿。
+- 当前规模：`moon test --target native` 164 个用例全绿。
 - 一键测试：`bash src/main/run_tests.sh`——自动起 WebDAV 服务端（优先
   brew 的 `webdav`，回退 `src/main/testdata/verify_server.py`）、跑
   `moon test` 全套测试、连真实服务端跑 `moon run src/main` 全流程
-  （含递归建目录 `mkdir_all` 建多级中文路径 + 幂等重跑，以及 testdata 真实文件往返：`binary.bin` 100 KiB 走 `put_file_from_path`
+  （含递归建目录 `mkdir_all` 建多级中文路径 + 幂等重跑，Range 区间 206 与
+  断点续传拼接比对，以及 testdata 真实文件往返：`binary.bin` 100 KiB 走 `put_file_from_path`
   本地路径上传（64 KiB 分块进度）→ `download_to_path` 写盘 → 逐字节比对，
   以及 `put_file` 全量形态 + 中文文件名端到端编码），
   最后关闭服务端并汇总 PASS/FAIL。真实链路还会跑一遍锁流程（LOCK → 无令牌 PUT
@@ -283,6 +300,9 @@ PROPFIND `Depth:0` allprop 再判定（404 → false，其余重抛）。这样�
 - 上传 / 下载各有三种形态，选择口径：内容已在内存 → `put_file` / `get_file`；
   数据源是流或磁盘上的大文件 → `put_file_stream` / `put_file_from_path`；
   要落盘 → `download_to_path`（同步 `on_chunk` 回调里 await 不了 async 写盘）；
+  要区间取回 → 三个下载方法的 `range? : ByteRange`；要从中断处继续 →
+  `download_to_path_resume`（带 `etag?` 发 `If-Range` 防服务端文件已变），
+  详见 `docs/06-range-resume.md`；
 - `mkdir` 是单级（409 = 父不存在），递归创建用 `mkdir_all`（`src/client/mkdir_all.mbt`）：
   逐级 MKCOL（`collection_prefixes` 切前缀），405 视为已存在跳过、409 先 PROPFIND
   `Depth:0` 复核——存在（并发创建）则跳过，不存在才抛出，避免父级不是集合时

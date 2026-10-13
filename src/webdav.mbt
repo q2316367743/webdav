@@ -19,6 +19,8 @@ pub using @types {
   type ResourceFailure,
   type PutResult,
   type GetResult,
+  type ByteRange,
+  type ContentRange,
   type ActiveLock,
   type LockResult,
   type LockScope,

@@ -93,6 +93,42 @@ async fn main {
       on_progress=progress_printer("下载"),
     )
     check(sink.to_bytes() == payload, "GET（流式）内容一致")
+    // 5b. Range 区间下载：只取前 8 字节，服务端支持时回 206
+    let head = @utf8.encode("你好，WebDAV！")
+    let range_result = client.get_file(
+      path="/demo/hello.txt",
+      range=@webdav.ByteRange::from(end=head.length() - 1),
+    )
+    check(
+      range_result.status == 206 && range_result.content == head,
+      "GET（区间 206）内容一致",
+    )
+    // 5c. 断点续传：本地只有前半段（模拟上次中断的残留），
+    //     resume 发 Range 从断点追加剩余字节；带 ETag 发 If-Range，
+    //     服务端文件已变时自动回退 200 整体重写
+    let local_target = @fs.tmpdir(prefix="webdav-resume-") + "/hello.txt"
+    @fs.write_file(local_target, head)
+    match put.etag {
+      Some(tag) =>
+        client.download_to_path_resume(
+          path="/demo/hello.txt",
+          local_path=local_target,
+          etag=tag,
+          chunk_size=4,
+          on_progress=progress_printer("续传"),
+        )
+      None =>
+        client.download_to_path_resume(
+          path="/demo/hello.txt",
+          local_path=local_target,
+          chunk_size=4,
+          on_progress=progress_printer("续传"),
+        )
+    }
+    check(
+      @fs.read_file(local_target).binary() == payload,
+      "断点续传拼接后内容一致",
+    )
     // 6. 移动 / 复制
     client.move_path(src="/demo/hello.txt", dst="/demo/renamed.txt")
     println("✓ MOVE /demo/hello.txt → /demo/renamed.txt")

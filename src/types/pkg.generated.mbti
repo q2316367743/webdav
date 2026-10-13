@@ -17,6 +17,10 @@ pub fn normalize_lock_token(String) -> String
 
 pub fn parse_ascii_int(String) -> Int?
 
+pub fn parse_content_range(String) -> ContentRange?
+
+pub fn parse_unsatisfied_range_total(String) -> Int?
+
 pub fn percent_decode(String) -> String
 
 pub fn percent_encode_path(String) -> String
@@ -46,6 +50,14 @@ pub(all) struct ActiveLock {
   lockroot : String?
 }
 
+pub struct ByteRange {
+  start : Int
+  end : Int?
+}
+pub fn ByteRange::from(start? : Int, end? : Int) -> Self
+pub fn ByteRange::header_value(Self) -> String
+pub fn ByteRange::suffix(Int) -> Self
+
 pub(all) struct Conditions {
   if_match : String?
   if_none_match : String?
@@ -54,6 +66,12 @@ pub(all) struct Conditions {
 }
 pub fn Conditions::new(if_match? : String, if_none_match? : String, lock_token? : String, if_lists? : Array[IfList]) -> Self
 pub fn Conditions::with_lock_token(Self, String) -> Self
+
+pub(all) struct ContentRange {
+  first : Int
+  last : Int
+  total : Int?
+}
 
 pub(all) enum Depth {
   Zero
@@ -80,6 +98,7 @@ pub(all) struct GetResult {
   content_length : Int?
   etag : String?
   last_modified : String?
+  content_range : ContentRange?
 }
 
 pub(all) struct IfCondition {

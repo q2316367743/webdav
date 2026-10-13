@@ -61,8 +61,17 @@ let client = @webdav.create_webdav_client({
 
 ### GetResult（`get_file` 的返回值，破坏性变更）
 
-`content : Bytes`、`status : Int`、`content_type?`、`content_length? : Int?`、
-`etag?`、`last_modified?`。
+`content : Bytes`、`status : Int`（200 全量 / 206 区间）、`content_type?`、
+`content_length? : Int?`、`etag?`、`last_modified?`、
+`content_range? : ContentRange?`（206 且 `Content-Range` 可解析时有值；
+注意 206 的 `content_length` 是**区间**长度，资源总长从 `content_range.total` 取）。
+
+### ByteRange / ContentRange（Range 区间下载，0.3.0）
+
+| 类型 | 说明 |
+|------|------|
+| `ByteRange` | 请求侧字节区间（字节从 0 计，`end` 含端），只能经工厂构造：`ByteRange::from(start?, end?)`（缺省 `start=0`；`end` 省略表示到末尾 `bytes=N-`）、`ByteRange::suffix(length)`（取末尾 N 字节 `bytes=-N`）；`header_value()` 渲染 `Range` 头的值 |
+| `ContentRange` | 206 响应 `Content-Range`（`bytes first-last/total`）解析结果：`first` / `last`（含端）与 `total : Int?`（服务器未知 `*` 时 `None`）；`parse_content_range(text)` 形态不符返回 `None`，`parse_unsatisfied_range_total(text)` 解析 416 的 `bytes */total` |
 
 ### Progress（进度快照）
 
@@ -108,8 +117,9 @@ match error.detail() {
 ```
 
 - `Api` 的 `message` 是中文状态码注解，并附服务端响应体前 200 字符；
-- `Io` 只由 `put_file_from_path` / `download_to_path` 产生（打开 / 读长度 /
-  创建 / 写入本地文件失败），`message` 是中文描述 + 原始系统错误——
+- `Io` 只由路径形态的传输产生（`put_file_from_path` / `download_to_path` /
+  `download_to_path_resume`：打开 / 读长度 / 创建 / 写入本地文件失败，
+  `resume` 另有本地残留 >2GB 的场景），`message` 是中文描述 + 原始系统错误——
   本地问题不会被伪装成服务端问题；
 - `error.to_string()` 得中文人读描述；实现了 `Show`，可直接 `println("\{error}")`；
 - 便捷构造：`WebdavError::http / xml / api / partial / cancelled / io`（供扩展实现复用）。
@@ -123,9 +133,10 @@ match error.detail() {
 | `put_file` | `path~, data~ : Bytes, content_type?` → `PutResult` | PUT **全量字节**（内容须已在内存），流式发送 |
 | `put_file_stream` | `path~, reader~ : &@io.Reader, content_length? : Int, content_type?` → `PutResult` | PUT **读取流**（边读边发）；给长度定长，不给走 chunked |
 | `put_file_from_path` | `path~, local_path~ : String, content_type?` → `PutResult` | PUT **本地文件**（内部打开 / 取长度 / 边读边发 / 关闭，不读进内存） |
-| `get_file` | `path~` → `GetResult` | GET 全量下载到内存 |
-| `download_file` | `path~, on_chunk~ : (Bytes) -> Unit, chunk_size?` | 流式分块下载（默认 64 KiB；同步回调，适合内存消费） |
-| `download_to_path` | `path~, local_path~ : String, chunk_size?` | 流式下载**写本地文件**（拿到 200 才建文件；async 写盘在内部完成） |
+| `get_file` | `path~, range? : ByteRange` → `GetResult` | GET 下载到内存；带 `range?` 发 `Range` 头，服务端接受时 206 只回区间（`content_range` 携带解析结果），忽略则 200 全量 |
+| `download_file` | `path~, on_chunk~ : (Bytes) -> Unit, chunk_size?, range?` | 流式分块下载（默认 64 KiB；同步回调，适合内存消费）；带 `range?` 时只消费区间，进度按本次响应计 |
+| `download_to_path` | `path~, local_path~ : String, chunk_size?, range?` | 流式下载**写本地文件**（拿到 200/206 才建文件；async 写盘在内部完成） |
+| `download_to_path_resume` | `path~, local_path~ : String, etag?, chunk_size?` | **断点续传**：本地已有 N 字节则发 `Range: bytes=N-` 只拉剩余部分（206 追加 / 200 回退重写 / 416 且已下完视为成功）；`etag?` 发 `If-Range` 防服务端文件已变；进度为绝对值 |
 | `mkdir` | `path~` | MKCOL 单级建目录（父不存在 → `Api(409)`） |
 | `mkdir_all` | `path~` | MKCOL **逐级**建目录（`mkdir -p` 语义；405 已存在跳过，409 复核存在性） |
 | `delete` | `path~` | DELETE（207 部分失败 → `Partial`） |
@@ -179,7 +190,10 @@ match error.detail() {
   64 KiB 分块写、逐块回调（真实网络进度）；声明了长度时 `total` 已知，chunked 时为 `None`；
 - `get_file`：moonhttp 读响应体时分块回调；
 - `download_file` / `download_to_path`：每收到一个 chunk 回调一次
-  （`total` 来自 Content-Length，无长度时 `None`）；
+  （`total` 来自 Content-Length，无长度时 `None`；带 `range?` 时按本次响应计，
+  206 的 `total` 即区间长度）；
+- `download_to_path_resume`：进度是**绝对值**——`loaded` 从本地已有字节数起累计，
+  `total` 为资源总长（`Content-Range` / `Content-Length` 均未给出时 `None`）；
 - Mock 传输层不写连接，上传进度不触发（黑盒测试断言了这一点）。
 
 ### 三种上传形态（moonhttp 0.5 流式请求体）
@@ -202,7 +216,7 @@ match error.detail() {
 要求原样重放请求体的重定向时，moonhttp 直接报错而不是静默发空体；HTTP/1.0 目标必须
 传 `content_length`（1.0 不认 chunked 请求体）。
 
-### 本地文件形态（put_file_from_path / download_to_path）
+### 本地文件形态（put_file_from_path / download_to_path / resume）
 
 两者都用 `moonbitlang/async/fs`（native 专属，与模块 `preferred_target = "native"` 一致）：
 
@@ -216,6 +230,9 @@ let put = client.put_file_from_path(
 )
 // 下载：先发请求拿 200，再建本地文件，边收边写
 client.download_to_path(path="/demo/big.bin", local_path="/Users/me/big.copy")
+// 断点续传：失败残留的本地文件从断点继续，带 ETag 发 If-Range 防服务端文件已变
+client.download_to_path_resume(path="/demo/big.bin",
+  local_path="/Users/me/big.copy", etag=put.etag.unwrap_or(""))
 ```
 
 语义与边界：
@@ -223,13 +240,33 @@ client.download_to_path(path="/demo/big.bin", local_path="/Users/me/big.copy")
 | 主题 | 口径 |
 |------|------|
 | 顺序 | `download_to_path` **先请求后建文件**：404 等失败不会清空本地已存在的同名文件 |
-| 覆盖 | 本地文件已存在则截断覆盖（`CreateOrTruncate`） |
-| 失败残留 | 取消或中途失败时本地可能留下部分内容，**不自动删除** |
-| 句柄 | 两条路径都在成功与失败时关闭文件；`put_file_from_path` 打不开文件或路径是目录时抛 `Io` 且**不发任何请求** |
-| 本地 IO 错误 | 统一为 `WebdavError::Io(message)`，不冒充 HTTP 错误 |
+| 覆盖 | 本地文件已存在则截断覆盖（`CreateOrTruncate`）；`resume` 的 206 分支是**追加**（`append=true`），200 回退才截断 |
+| 失败残留 | 取消或中途失败时本地可能留下部分内容，**不自动删除**（正是 `resume` 的续传起点） |
+| 完整性 | `resume` 写完后校验本地大小与服务端总长一致（总长已知时），不一致抛 `Api`——**成功返回 = 文件完整** |
+| 句柄 | 各路径都在成功与失败时关闭文件；`put_file_from_path` 打不开文件或路径是目录时抛 `Io` 且**不发任何请求** |
+| 本地 IO 错误 | 统一为 `WebdavError::Io(message)`，不冒充 HTTP 错误；`resume` 对 >2GB 的本地残留文件抛 `Io`（`Int32` 口径） |
 | 目录 | 目标父目录不存在即失败（`Io`），不自动递归建目录 |
 | 长度快照 | 传输过程中源文件被改写会触发「写出字节数与声明不符」→ `Http` 错误 |
 | 超时 | `WebdavConfig::timeout_ms` 覆盖「建连 → 写头 → 写完整个请求体 → 响应头」；大文件需调大或设 `None` |
+
+### Range 区间下载与断点续传
+
+```moonbit
+// 只要前 8 字节（bytes=0-7），服务端支持时回 206
+let head = client.get_file(path="/d.txt",
+  range=@webdav.ByteRange::from(end=7))
+// 从 100 字节处取到末尾（bytes=100-）；末尾 512 字节用 ByteRange::suffix(512)
+let tail = client.get_file(path="/d.txt", range=@webdav.ByteRange::from(start=100))
+// 服务端忽略 Range 时上两个调用照常成功，以 status / content_range 区分
+```
+
+- 区间端点受 `Int32` 约束（>2GB 资源不支持）；不发多区间请求，不解析
+  multipart/byteranges；
+- 断点续传入口是 `download_to_path_resume`（算法与状态分支见
+  [06-range-resume.md](06-range-resume.md)）：**成功返回 = 文件完整**；
+  `etag?` 强烈建议传（上次响应的 ETag），省略则裸续传，服务端文件被整体替换时
+  可能拼出损坏内容；
+- `download_to_path_resume` 不接 `conditions?`：`If-Range` 本身就是该请求的条件。
 
 ### 条件请求与乐观并发
 
