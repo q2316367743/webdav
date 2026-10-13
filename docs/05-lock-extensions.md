@@ -1,6 +1,6 @@
 # 05 锁能力扩展：共享锁、`If` 头、lock-null 清理与 423 重试
 
-对应 `docs/03-gap-analysis.md` 的 P1 第 7 条「锁能力扩展」。基线是 0.1.0 已交付的
+对应 `docs/03-gap-analysis.md` 原 P1 候选条目「锁能力扩展」（已落地，见其「锁支持」章节）。基线是 0.1.0 已交付的
 **独占写锁闭环**（`lock` / `refresh_lock` / `unlock` / `get_locks`），0.2.0 在其上补齐：
 
 | 能力 | 结论 |

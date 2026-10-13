@@ -35,7 +35,7 @@
 实现见 `src/client/mkdir_all.mbt`（`collection_prefixes` + `mkcol_tolerate_existing`），
 契约见 `docs/02-api.md` 的「递归建目录（`mkdir_all`）」。
 
-## 锁支持（已实现，0.2.0 补齐 P1 扩展）
+## 锁支持（已实现，0.2.0；原 P1 候选条目）
 
 RFC 4918 §9.10 / §9.11 的写锁闭环，0.2.0 起含共享锁与完整的 `If`：
 
@@ -56,7 +56,7 @@ RFC 4918 §9.10 / §9.11 的写锁闭环，0.2.0 起含共享锁与完整的 `If
 给 Python 兜底服务器补上锁表与 `If` 解析，让独占 / 共享锁、带标签 `If`、lock-null
 与 423 重试在真实链路可跑（hacdias 不支持的部分按预期软跳过）。
 
-## Range / 断点续传（已实现，0.3.0 补齐 P1 第 1 条）
+## Range / 断点续传（已实现，0.3.0；原 P1 候选第 1 条）
 
 RFC 7233 区间下载与断点续传，解决「`download_to_path` 失败后只能整体重下」：
 
@@ -91,26 +91,19 @@ RFC 7233 区间下载与断点续传，解决「`download_to_path` 失败后只�
 
 ## P1：能力扩展（下一阶段候选）
 
-按「使用频率 × 实现成本」粗排，尚未实现：
+按「使用频率 × 实现成本」粗排，尚未实现；已落地的原候选条目
+（锁能力扩展 → 0.2.0，Range / 断点续传 → 0.3.0）移入上方各节：
 
-1. **Range / 断点续传（0.3.0 已实现）**：三个下载方法增 `range? : ByteRange`
-   （结构体而非 tuple，才能表达 `bytes=N-` 开放末端），配套 `Content-Range`
-   解析与 206 / 416 状态分支；`download_to_path_resume` 以本地残留为起点续传，
-   `etag?` 发 `If-Range` 保证服务端文件未变。实现记录见 `docs/06-range-resume.md`。
-2. **认证面扩展**：moonhttp 只内置 Basic（`with_auth`）。Digest 需要自己拼
+1. **认证面扩展**：moonhttp 只内置 Basic（`with_auth`）。Digest 需要自己拼
    `Authorization`（自定义头可绕过，moonhttp 的 `set_if_absent` 不覆盖用户头），
    Bearer / OAuth 同理；可选做 `AuthProvider` 抽象。
-3. **重定向 / 代理 / 超时策略暴露**：moonhttp 的 `max_redirects`、
+2. **重定向 / 代理 / 超时策略暴露**：moonhttp 的 `max_redirects`、
    `with_proxy`、按请求 timeout 目前被客户端默认配置挡住，可按需透传。
    大文件的整跳超时（覆盖「写完整个请求体」）尤其值得暴露。
-4. **属性删除与命名空间区分**：PROPPATCH 现在只 set；补 remove
+3. **属性删除与命名空间区分**：PROPPATCH 现在只 set；补 remove
    （`<D:remove>`），并让 `PropResult` 带上命名空间以免同名属性撞车。
-5. **取消语义细化**：区分「用户取消」与「超时取消」（moonhttp 的
+4. **取消语义细化**：区分「用户取消」与「超时取消」（moonhttp 的
    `AbortSignal::reason()` 已能携带原因，`Cancelled(reason)` 已预留位置）。
-6. **锁能力扩展（0.2.0 已实现）**：共享锁（`shared`）、带标签 `If`（`</url> (<令牌>)`）、
-   `Not` / ETag 形态 `If`、多令牌列表、lock-null 的创建清理、按 423 自动重试
-   （`retry_on_423`，默认关）；`Depth: 1` 的 LOCK 按 RFC 4918 §9.10.3 **裁定不做**
-   （本地仍回 400）。实现记录见 `docs/05-lock-extensions.md`。
 
 ## P2：更远的方向（按需）
 
