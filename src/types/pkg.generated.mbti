@@ -7,7 +7,7 @@ import {
 }
 
 // Values
-pub const DEFAULT_TIMEOUT_MS : Int = 30_000
+pub const DEFAULT_TIMEOUT_MS : Int32 = 30_000
 
 pub fn ascii_upper(String) -> String
 
@@ -15,11 +15,11 @@ pub fn href_to_path(String) -> String
 
 pub fn normalize_lock_token(String) -> String
 
-pub fn parse_ascii_int(String) -> Int?
+pub fn parse_ascii_int(String) -> Int32?
 
 pub fn parse_content_range(String) -> ContentRange?
 
-pub fn parse_unsatisfied_range_total(String) -> Int?
+pub fn parse_unsatisfied_range_total(String) -> Int32?
 
 pub fn percent_decode(String) -> String
 
@@ -29,7 +29,7 @@ pub fn percent_encode_path(String) -> String
 pub(all) suberror WebdavError {
   WebdavError(WebdavErrorDetail)
 }
-pub fn WebdavError::api(status~ : Int, operation~ : String, message~ : String) -> Self
+pub fn WebdavError::api(status~ : Int32, operation~ : String, message~ : String) -> Self
 pub fn WebdavError::cancelled(reason? : String) -> Self
 pub fn WebdavError::detail(Self) -> WebdavErrorDetail
 pub fn WebdavError::http(@moonhttp.HttpError) -> Self
@@ -51,12 +51,12 @@ pub(all) struct ActiveLock {
 }
 
 pub struct ByteRange {
-  start : Int
-  end : Int?
+  start : Int32
+  end : Int32?
 }
-pub fn ByteRange::from(start? : Int, end? : Int) -> Self
+pub fn ByteRange::from(start? : Int32, end? : Int32) -> Self
 pub fn ByteRange::header_value(Self) -> String
-pub fn ByteRange::suffix(Int) -> Self
+pub fn ByteRange::suffix(Int32) -> Self
 
 pub(all) struct Conditions {
   if_match : String?
@@ -68,9 +68,9 @@ pub fn Conditions::new(if_match? : String, if_none_match? : String, lock_token? 
 pub fn Conditions::with_lock_token(Self, String) -> Self
 
 pub(all) struct ContentRange {
-  first : Int
-  last : Int
-  total : Int?
+  first : Int32
+  last : Int32
+  total : Int32?
 }
 
 pub(all) enum Depth {
@@ -84,7 +84,7 @@ pub(all) struct FileInfo {
   href : String
   name : String
   is_dir : Bool
-  content_length : Int?
+  content_length : Int32?
   content_type : String?
   last_modified : String?
   created : String?
@@ -93,9 +93,9 @@ pub(all) struct FileInfo {
 
 pub(all) struct GetResult {
   content : Bytes
-  status : Int
+  status : Int32
   content_type : String?
-  content_length : Int?
+  content_length : Int32?
   etag : String?
   last_modified : String?
   content_range : ContentRange?
@@ -121,7 +121,7 @@ pub(all) struct IfList {
 pub fn IfList::new(Array[IfCondition], resource_tag? : String) -> Self
 
 pub(all) struct LockResult {
-  status : Int
+  status : Int32
   created : Bool
   lock : ActiveLock
 }
@@ -134,19 +134,19 @@ pub fn LockScope::from_dav(String) -> Self
 pub fn LockScope::to_dav(Self) -> String
 
 pub(all) struct Progress {
-  loaded : Int
-  total : Int?
+  loaded : Int32
+  total : Int32?
 }
 pub fn Progress::percent(Self) -> Double?
 
 pub(all) struct PropResult {
   name : String
   value : String
-  status : Int
+  status : Int32
 }
 
 pub(all) struct PutResult {
-  status : Int
+  status : Int32
   created : Bool
   etag : String?
   last_modified : String?
@@ -155,12 +155,12 @@ pub(all) struct PutResult {
 
 pub(all) struct ResourceFailure {
   href : String
-  status : Int
+  status : Int32
   message : String
 }
 
 pub(all) struct ServerCapabilities {
-  dav_class : Array[Int]
+  dav_class : Array[Int32]
   allow : Array[String]
   server : String?
 }
@@ -171,7 +171,7 @@ pub(all) struct WebdavConfig {
   base_url : String
   username : String?
   password : String?
-  timeout_ms : Int?
+  timeout_ms : Int32?
   retry_on_423 : Bool?
 } derive(Default)
 pub fn WebdavConfig::default() -> Self
@@ -179,7 +179,7 @@ pub fn WebdavConfig::default() -> Self
 pub(all) enum WebdavErrorDetail {
   Http(@moonhttp.HttpError)
   Xml(@xml.XmlError)
-  Api(status~ : Int, operation~ : String, message~ : String)
+  Api(status~ : Int32, operation~ : String, message~ : String)
   Partial(operation~ : String, failures~ : Array[ResourceFailure])
   Cancelled(String?)
   Io(message~ : String)

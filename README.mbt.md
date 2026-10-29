@@ -114,6 +114,8 @@ async fn main {
 - [docs/04-ci-cd.md](docs/04-ci-cd.md) —— CI / CD：测试与发布工作流
 - [docs/05-lock-extensions.md](docs/05-lock-extensions.md) —— 锁能力扩展：共享锁、`If` 头、lock-null 清理与 423 重试
 - [docs/06-range-resume.md](docs/06-range-resume.md) —— Range 区间下载与断点续传
+- [docs/07-reuse-boundary.md](docs/07-reuse-boundary.md) —— 与同生态 WebDAV 实现的复用边界及 native 新增职责
+- [docs/08-rfc4918-scope.md](docs/08-rfc4918-scope.md) —— RFC 4918 兼容范围与可复现案例
 
 ## 开发
 

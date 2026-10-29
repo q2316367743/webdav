@@ -28,14 +28,14 @@ pub(all) struct ParsedProp {
   name : String
   ns_uri : String?
   value : String
-  status : Int
+  status : Int32
 }
 
 pub(all) struct ParsedResource {
   href : String
   is_dir : Bool
   props : Array[ParsedProp]
-  status : Int?
+  status : Int32?
   responsedescription : String?
 }
 pub fn ParsedResource::display_name(Self) -> String

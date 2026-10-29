@@ -11,7 +11,7 @@ import {
 // Values
 pub const DEFAULT_PROP_NS : String = "urn:q2316367743:webdav:prop"
 
-pub const DEFAULT_TIMEOUT_MS : Int = 30_000
+pub const DEFAULT_TIMEOUT_MS : Int32 = 30_000
 
 pub fn create_webdav_client(@types.WebdavConfig) -> @client.WebdavClient
 
